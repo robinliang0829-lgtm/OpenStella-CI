@@ -18,7 +18,8 @@ def checkout(sha, key_material, destination):
     destination.mkdir(mode=0o700, parents=True)
     with tempfile.TemporaryDirectory(prefix='.source-key-', dir=destination.parent) as temporary:
         key = Path(temporary) / 'key'
-        key.write_text(key_material)
+        # OpenSSH requires a final LF; gh secret set trims CR/LF from stdin.
+        key.write_text(key_material if key_material.endswith("\n") else key_material + "\n")
         key.chmod(0o600)
         hosts = Path(temporary) / 'known_hosts'
         hosts.write_text(HOST_KEY)
