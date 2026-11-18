@@ -1,0 +1,28 @@
+name: Credential-free runner smoke test
+
+on:
+  repository_dispatch:
+    types: [ci-smoke]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  probe:
+    if: >-
+      github.actor == github.repository_owner &&
+      (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'ci-smoke-'))
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 3
+    steps:
+      - name: Verify hosted runner execution without accessing application code
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'Runner execution confirmed. No private checkout or credentials used.'
