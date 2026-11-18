@@ -1,0 +1,153 @@
+name: Private-source CI
+run-name: Private source validation
+on:
+  repository_dispatch:
+    types: [openstella-ci]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full approved source commit SHA
+        type: string
+        required: true
+      target:
+        description: Validation profile
+        type: choice
+        options: [all, node, kit, ios]
+        default: all
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: private-source-ci
+  cancel-in-progress: false
+jobs:
+  request:
+    name: Validate non-sensitive request
+    if: >-
+      github.repository == 'robinliang0829-lgtm/OpenStella-CI' &&
+      github.actor == github.repository_owner &&
+      (github.event_name != 'release' ||
+      (startsWith(github.event.release.tag_name, 'ci-') && !startsWith(github.event.release.tag_name, 'ci-smoke-')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      target: ${{ steps.request.outputs.target }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Test infrastructure privacy contracts
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: python3 -m unittest discover -s tests -v
+      - name: Validate trigger, actor and parameter allowlist
+        id: request
+        run: python3 scripts/ci_request.py
+  node:
+    name: Contracts, server and web
+    needs: request
+    if: needs.request.outputs.target == 'all' || needs.request.outputs.target == 'node'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: openstella
+          POSTGRES_PASSWORD: ci_ephemeral_only
+          POSTGRES_DB: openstella_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U openstella"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable CI database only; never a production credential.
+      TEST_DATABASE_URL: postgres://openstella:ci_ephemeral_only@127.0.0.1:5432/openstella_test
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Fetch approved source without retaining the read key
+        env:
+          REQUESTED_SHA: ${{ needs.request.outputs.sha }}
+          SOURCE_READ_SSH_KEY: ${{ secrets.SOURCE_READ_SSH_KEY }}
+        run: python3 scripts/private_checkout.py
+      - name: Validate source with private tool output
+        run: python3 scripts/private_build.py node
+      - name: Remove private source and raw reports
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          for name in ('private-source', 'private-output'):
+              shutil.rmtree(pathlib.Path(os.environ['RUNNER_TEMP']) / name, ignore_errors=True)
+          PY
+  kit:
+    name: Swift package on Linux
+    needs: request
+    if: needs.request.outputs.target == 'all' || needs.request.outputs.target == 'kit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: swift:6.4.1-noble@sha256:19cbe56bdaec1918f7cf5fdeba42b9bd55bdd8a6149c9990d0e0e3a89a127d63
+    steps:
+      - name: Prepare public tooling
+        run: apt-get update -qq && apt-get install -y --no-install-recommends python3 git openssh-client ca-certificates > /dev/null
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Fetch approved source without retaining the read key
+        env:
+          REQUESTED_SHA: ${{ needs.request.outputs.sha }}
+          SOURCE_READ_SSH_KEY: ${{ secrets.SOURCE_READ_SSH_KEY }}
+        run: python3 scripts/private_checkout.py
+      - name: Validate source with private tool output
+        run: python3 scripts/private_build.py kit
+      - name: Remove private source and raw reports
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          for name in ('private-source', 'private-output'):
+              shutil.rmtree(pathlib.Path(os.environ['RUNNER_TEMP']) / name, ignore_errors=True)
+          PY
+  ios:
+    name: App on iOS Simulator
+    needs: request
+    if: needs.request.outputs.target == 'all' || needs.request.outputs.target == 'ios'
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Fetch approved source without retaining the read key
+        env:
+          REQUESTED_SHA: ${{ needs.request.outputs.sha }}
+          SOURCE_READ_SSH_KEY: ${{ secrets.SOURCE_READ_SSH_KEY }}
+        run: python3 scripts/private_checkout.py
+      - name: Validate source with private tool output
+        run: python3 scripts/private_build.py ios
+      - name: Remove private source and raw reports
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          for name in ('private-source', 'private-output'):
+              shutil.rmtree(pathlib.Path(os.environ['RUNNER_TEMP']) / name, ignore_errors=True)
+          PY
