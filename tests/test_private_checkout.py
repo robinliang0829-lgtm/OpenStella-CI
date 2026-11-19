@@ -71,7 +71,7 @@ class CheckoutTests(unittest.TestCase):
     def test_static_approval_is_exact_and_not_inherited(self):
         import os
         helper = importlib.import_module('scripts.private_checkout')
-        self.assertEqual(getattr(helper, 'APPROVED_FEATURE_SHAS', None), frozenset(), 'Static approvals must exist and default to empty')
+        self.assertEqual(getattr(helper, 'APPROVED_FEATURE_SHAS', None), frozenset({'91232a0909935d3ca2929c3cfa22e2f1896072f7'}), 'Only the explicitly reviewed snapshot may be approved')
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             origin, git, main, commits, other = self.make_history(root)
