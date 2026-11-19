@@ -118,6 +118,188 @@ class BuildTests(unittest.TestCase):
                         log.write_text(quotation)
                         self.assertEqual(helper.classify_app_tests_failure(log), 'unknown')
 
+    def test_assertion_detail_true(self):
+        self.assert_assertion_detail('error: XCTAssertTrue failed - PRIVATE_SOURCE_CANARY', 'true')
+
+    def test_assertion_detail_located_xctest_groups(self):
+        for directory, target in [('FixtureTests', 'hosted-tests'), ('FixtureUITests', 'ui-tests')]:
+            with self.subTest(target=target):
+                self.assert_assertion_detail(
+                    f'/private/{directory}/Hidden.swift:12: error: -[Fixture.Class testPrivate] : XCTAssertTrue failed - PRIVATE_SOURCE_CANARY',
+                    'true', target)
+
+    def test_assertion_detail_basic_kinds(self):
+        for kind, body in [
+            ('false', 'XCTAssertFalse failed - PRIVATE_SOURCE_CANARY'),
+            ('equal', 'XCTAssertEqual failed: ("PRIVATE_SOURCE_CANARY") is not equal to ("fixture") - sk-fake-key'),
+            ('unwrap', 'XCTUnwrap failed: expected non-nil value of type String - PRIVATE_SOURCE_CANARY'),
+        ]:
+            with self.subTest(kind=kind):
+                self.assert_assertion_detail('error: -[Fixture.Class testPrivate] : ' + body, kind)
+
+    def test_assertion_detail_wait_timeout_from_equality_operands_only(self):
+        for result_type in ['XCTWaiterResult', 'XCTWaiter.Result']:
+            with self.subTest(result_type=result_type):
+                self.assert_assertion_detail(
+                    '/private/FixtureUITests/Hidden.swift:12:3: error: -[Fixture.Class testPrivate] : '
+                    f'XCTAssertEqual failed: ("{result_type}(rawValue: 2)") is not equal to ("{result_type}(rawValue: 1)") - PRIVATE_SOURCE_CANARY',
+                    'wait-timeout', 'ui-tests')
+
+    def test_assertion_detail_references_do_not_add_kind_or_group(self):
+        line = '/private/FixtureUITests/Hidden.swift:12:3: error: -[Fixture.Class testPrivate] : XCTAssertTrue failed - PRIVATE_SOURCE_CANARY'
+        for diagnostic in [
+            'expected text: ' + line, '> ' + line, '"' + line + '"', "'" + line + "'",
+            'warning: ' + line, 'note: ' + line,
+            line.replace(': error: ', ': warning: '), line.replace(': error: ', ': note: '),
+            line.replace(':12:3:', ':not-line:3:'),
+            'error: expected text: XCTAssertTrue failed - PRIVATE_SOURCE_CANARY',
+            'error: -[Fixture.Class testPrivate] : "XCTAssertTrue failed - quoted"',
+            'error: -[Fixture.Class testPrivate] : failed - quoted XCTAssertTrue failed - fixture',
+            '> ' + line + '\n' + line,
+        ]:
+            with self.subTest(diagnostic=diagnostic):
+                self.assert_assertion_detail(diagnostic)
+
+    def test_assertion_detail_same_line_groups_and_kind_matrix(self):
+        for kind, body in [('true', 'XCTAssertTrue failed - fixture'),
+                           ('false', 'XCTAssertFalse failed - fixture'),
+                           ('equal', 'XCTAssertEqual failed: ("1") is not equal to ("0")'),
+                           ('unwrap', 'XCTUnwrap failed: expected non-nil value')]:
+            for directory, target in [('FixtureTests', 'hosted-tests'),
+                                      ('FixtureUITests', 'ui-tests'), ('Unknown', 'unknown')]:
+                with self.subTest(kind=kind, target=target):
+                    self.assert_assertion_detail(
+                        f'/private/{directory}/Hidden.swift:12:3: error: -[Fixture.Class testPrivate] : {body}',
+                        kind, target)
+        for diagnostic in [
+            'error: -[FixtureUITests.Class testPrivate] : XCTAssertTrue failed - fixture',
+            '/private/FixtureUITests/Hidden.swift:12:3: warning: unrelated\nerror: XCTAssertTrue failed - fixture',
+            'CompileSwift /private/FixtureUITests/Hidden.swift\nerror: XCTAssertTrue failed - fixture',
+            'error: XCTAssertTrue failed - /private/FixtureUITests/Hidden.swift:12:3',
+            '/private/FixtureUITests.swift:12: error: XCTAssertTrue failed - fixture',
+            '/private/FixtureUITestsHelper/Hidden.swift:12: error: XCTAssertTrue failed - fixture',
+            '/private/FixtureTests/FixtureUITests/Hidden.swift:12: error: XCTAssertTrue failed - fixture',
+            '/private/FixtureUITests/../Unknown/Hidden.swift:12: error: XCTAssertTrue failed - fixture',
+            'error: XCTAssertTrue failed - fixture\n/private/FixtureUITests/Hidden.swift:12: error: XCTAssertFalse failed - fixture',
+        ]:
+            with self.subTest(diagnostic=diagnostic):
+                self.assert_assertion_detail(diagnostic, 'true')
+
+    def test_assertion_detail_waiter_words_or_numeric_values_are_not_wait_timeout(self):
+        wait = 'XCTAssertEqual failed: ("XCTWaiterResult(rawValue: 2)") is not equal to ("XCTWaiterResult(rawValue: 1)")'
+        for body, kind in [
+            ('XCTAssertTrue failed - quoted ' + wait, 'true'),
+            ('XCTAssertFalse failed - quoted ' + wait, 'false'),
+            ('XCTUnwrap failed: expected non-nil - quoted ' + wait, 'unwrap'),
+            ('XCTAssertEqual failed: ("2") is not equal to ("1") - quoted ' + wait, 'equal'),
+            ('XCTAssertEqual failed: quoted "' + wait + '"', 'equal'),
+            (wait.replace('rawValue: 2', 'rawValue: 3'), 'equal'),
+            (wait.replace('rawValue: 1', 'rawValue: 2'), 'equal'),
+            (wait + ' trailing unexpected text', 'equal'),
+        ]:
+            with self.subTest(kind=kind, body=body):
+                self.assert_assertion_detail('error: -[Fixture.Class testPrivate] : ' + body, kind)
+
+    def test_assertion_detail_faults_are_best_effort(self):
+        for fault in ['read', 'classifier', 'write', 'flush', 'unallowlisted']:
+            with self.subTest(fault=fault):
+                self.assert_assertion_detail(
+                    '/private/FixtureTests/Hidden.swift:12: error: XCTAssertTrue failed - PRIVATE_SOURCE_CANARY',
+                    'true', 'hosted-tests', fault=fault)
+
+    def test_assertion_detail_reads_are_bounded_silent_and_fail_closed(self):
+        from unittest.mock import MagicMock
+        helper = importlib.import_module('scripts.private_build')
+        limit = 1024 * 1024
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            public, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                self.assertEqual(helper.classify_app_tests_failure(log, assertion_detail=True), 'unknown')
+                prefix = b'error: XCTAssertTrue failed - PRIVATE_SOURCE_CANARY\n'
+                log.write_bytes(prefix + b' ' * (limit - len(prefix)))
+                self.assertEqual(helper.classify_app_tests_failure(log, assertion_detail=True),
+                                 'assertion-true-target-unknown')
+                with log.open('ab') as stream:
+                    stream.write(b' ')
+                self.assertEqual(helper.classify_app_tests_failure(log, assertion_detail=True), 'unknown')
+                log.write_bytes(b'\xff' + prefix)
+                self.assertEqual(helper.classify_app_tests_failure(log, assertion_detail=True), 'unknown')
+                for error in [OSError('PRIVATE_SOURCE_CANARY'), MemoryError('PRIVATE_SOURCE_CANARY')]:
+                    with failing_log_reads(error):
+                        self.assertEqual(helper.classify_app_tests_failure(log, assertion_detail=True), 'unknown')
+                mocked = MagicMock()
+                stream = mocked.open.return_value.__enter__.return_value
+                stream.read.return_value = prefix
+                self.assertEqual(helper.classify_app_tests_failure(mocked, assertion_detail=True),
+                                 'assertion-true-target-unknown')
+                stream.read.assert_called_once_with(limit + 1)
+                mocked.open.return_value.__exit__.side_effect = MemoryError('PRIVATE_SOURCE_CANARY')
+                self.assertEqual(helper.classify_app_tests_failure(mocked, assertion_detail=True), 'unknown')
+            self.assertEqual(public.getvalue(), '')
+            self.assertEqual(stderr.getvalue(), '')
+
+    def assert_assertion_detail(self, diagnostic, kind=None, target='unknown', *, fault=None):
+        from unittest.mock import patch, MagicMock
+        import json
+        helper = importlib.import_module('scripts.private_build')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = helper.StageFailed('PRIVATE_SOURCE_CANARY sk-fake-key testPrivate')
+            process = MagicMock()
+            process.poll.return_value = None
+            process.wait.side_effect = [helper.subprocess.TimeoutExpired('fixture', 10), None]
+            devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [
+                {'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+
+            def stage(label, args, cwd, logs):
+                if label == 'app-tests':
+                    (logs / 'app-tests.log').write_text(diagnostic + '\nPRIVATE_SOURCE_CANARY sk-fake-key\n')
+                    print('app-tests: failed', flush=True)
+                    raise original
+
+            real_classifier = helper.classify_app_tests_failure
+            def classify(log, **kwargs):
+                if kwargs.get('assertion_detail'):
+                    if fault == 'read':
+                        with failing_log_reads(MemoryError('PRIVATE_SOURCE_CANARY')):
+                            return real_classifier(log, **kwargs)
+                    if fault == 'classifier':
+                        raise MemoryError('PRIVATE_SOURCE_CANARY')
+                    if fault == 'unallowlisted':
+                        return 'PRIVATE_SOURCE_CANARY sk-fake-key testPrivate'
+                return real_classifier(log, **kwargs)
+
+            class Output(io.StringIO):
+                def write(self, text):
+                    if fault == 'write' and 'app-tests-assertion-' in text:
+                        raise OSError('PRIVATE_SOURCE_CANARY')
+                    return super().write(text)
+                def flush(self):
+                    if fault == 'flush' and 'app-tests-assertion-' in self.getvalue():
+                        raise MemoryError('PRIVATE_SOURCE_CANARY')
+                    return super().flush()
+
+            public, stderr = Output(), io.StringIO()
+            with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'), patch.object(helper, 'classify_app_tests_failure', side_effect=classify) as classified:
+                with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(helper.StageFailed) as caught:
+                        helper.run_profile('ios', root, root / 'logs')
+            self.assertIs(caught.exception, original)
+            expected = 'app-tests: failed\napp-tests-test-assertion: failed\n'
+            if kind and fault in (None, 'flush'):
+                expected += f'app-tests-assertion-{kind}-target-{target}: failed\n'
+            self.assertEqual(public.getvalue(), expected)
+            self.assertEqual(stderr.getvalue(), '')
+            self.assertEqual(classified.call_count, 2)
+            self.assertEqual(classified.call_args.kwargs, {'assertion_detail': True})
+            process.terminate.assert_called_once_with()
+            process.kill.assert_called_once_with()
+            self.assertEqual(process.wait.call_count, 2)
+            self.assertEqual(process.wait.call_args_list[0].kwargs, {'timeout': 10})
+            self.assertEqual(process.wait.call_args_list[1].args, ())
+            self.assertEqual(process.wait.call_args_list[1].kwargs, {})
+
     def assert_build_reason(self, expected, diagnostic):
         helper = importlib.import_module('scripts.private_build')
         with tempfile.TemporaryDirectory() as tmp:
@@ -644,6 +826,9 @@ class BuildTests(unittest.TestCase):
                 if category == 'test-build':
                     self.assertEqual(classify.call_count, 2)
                     self.assertEqual(classify.call_args.kwargs, {'build_reason': True})
+                elif category == 'test-assertion':
+                    self.assertEqual(classify.call_count, 2)
+                    self.assertEqual(classify.call_args.kwargs, {'assertion_detail': True})
                 else:
                     classify.assert_called_once_with(logs / 'app-tests.log')
                 process.terminate.assert_called_once_with()
@@ -731,6 +916,9 @@ class BuildTests(unittest.TestCase):
     def test_type_inference_detail_pressure_finishes_before_cleanup_deadline(self):
         self.assert_diagnostic_pressure('detail')
 
+    def test_assertion_detail_pressure_finishes_before_cleanup_deadline(self):
+        self.assert_diagnostic_pressure('assertion')
+
     def assert_diagnostic_pressure(self, mode):
         import subprocess
         import textwrap
@@ -755,6 +943,10 @@ class BuildTests(unittest.TestCase):
                 'location-prefix': '/private/Fixture.swift:12:3: error: ',
                 'many-locations': '/private/FixtureTests/Hidden.swift:12:3: error: unknown\\n',
                 'deep-location': '/d',
+                'assert-body': 'error: XCTAssertTrue failed - ',
+                'assert-repeated': 'XCTAssertTrue ',
+                'assert-wrapper': 'error: -[',
+                'assert-deep-path': '/d',
             }
             pattern = patterns[sys.argv[1]]
             summary = '\\n** BUILD FAILED **\\n' if sys.argv[2] in ('build', 'detail') else ''
@@ -764,6 +956,18 @@ class BuildTests(unittest.TestCase):
                 summary = '/ios/FixtureTests/Hidden.swift:12:3: error: ambiguous use of PRIVATE_SOURCE_CANARY' + summary
                 reason = 'build-type-inference'
                 detail = 'build-ambiguous-use-target-hosted-tests'
+            assertion_expected = expected
+            if sys.argv[1] in ('assert-body', 'assert-repeated', 'assert-wrapper', 'assert-deep-path'):
+                expected = reason = 'test-assertion'
+                assertion_expected = 'unknown'
+                summary = 'failed - PRIVATE_SOURCE_CANARY'
+                if sys.argv[1] == 'assert-body':
+                    assertion_expected = 'assertion-true-target-unknown'
+                elif sys.argv[1] == 'assert-wrapper':
+                    summary = 'XCTAssertTrue failed - PRIVATE_SOURCE_CANARY'
+                elif sys.argv[1] == 'assert-deep-path':
+                    summary = '/FixtureUITests/Hidden.swift:12: error: -[Fixture.Class testPrivate] : XCTAssertTrue failed - PRIVATE_SOURCE_CANARY'
+                    assertion_expected = 'assertion-true-target-ui-tests'
             diagnostic = pattern * ((limit - len(summary)) // len(pattern)) + summary
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -787,6 +991,8 @@ class BuildTests(unittest.TestCase):
                     assert helper.classify_app_tests_failure(log, build_reason=True) == reason
                     if sys.argv[2] == 'detail':
                         assert helper.classify_app_tests_failure(log, type_inference_detail=True) == detail
+                    if sys.argv[2] == 'assertion':
+                        assert helper.classify_app_tests_failure(log, assertion_detail=True) == assertion_expected
                     with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'):
                         try:
                             helper.run_profile('ios', root, root)
@@ -797,6 +1003,8 @@ class BuildTests(unittest.TestCase):
                 expected_public = 'app-tests: failed\\napp-tests-' + expected + ': failed\\n'
                 if sys.argv[1] == 'deep-location':
                     expected_public += 'app-tests-build-type-inference: failed\\napp-tests-build-ambiguous-use-target-hosted-tests: failed\\n'
+                if sys.argv[2] == 'assertion' and assertion_expected.startswith('assertion-'):
+                    expected_public += 'app-tests-' + assertion_expected + ': failed\\n'
                 assert public.getvalue() == expected_public
                 assert stderr.getvalue() == ''
                 process.terminate.assert_called_once_with()
@@ -809,6 +1017,8 @@ class BuildTests(unittest.TestCase):
                  'many-long-lines', 'many-short-lines']
         if mode == 'detail':
             cases += ['location-prefix', 'many-locations', 'deep-location']
+        elif mode == 'assertion':
+            cases += ['assert-body', 'assert-repeated', 'assert-wrapper', 'assert-deep-path']
         for case in cases:
             with self.subTest(case=case):
                 try:

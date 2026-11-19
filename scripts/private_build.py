@@ -22,7 +22,7 @@ def run_stage(label, args, source, logs, env=None):
     if result.returncode:
         raise StageFailed(label)
 
-def classify_app_tests_failure(log, *, build_reason=False, type_inference_detail=False):
+def classify_app_tests_failure(log, *, build_reason=False, type_inference_detail=False, assertion_detail=False):
     """Return a fixed evidence category; never return private diagnostics."""
     try:
         # Bound allocation even if the file grows; never classify a partial log.
@@ -42,6 +42,35 @@ def classify_app_tests_failure(log, *, build_reason=False, type_inference_detail
         body = line.partition('error: -[')[2].partition('] : ')[2]
         if ((assertion and re.search(r'\bfailed\b', line[assertion.end():]))
                 or re.match(r'failed\b', body)):
+            if assertion_detail:
+                location = ''
+                if line.startswith('error: '):
+                    message = line[7:]
+                else:
+                    location, separator, message = line.partition(': error: ')
+                    if not separator or not re.fullmatch(r'/[A-Za-z0-9_./ -]+\.swift:[0-9]+(?::[0-9]+)?', location):
+                        return 'unknown'
+                if message.startswith('-['):
+                    header, separator, message = message.partition('] : ')
+                    if not separator or not re.fullmatch(r'-\[[A-Za-z0-9_.]+ [A-Za-z0-9_]+', header):
+                        return 'unknown'
+                parts = location.partition(':')[0].split('/')[1:-1]
+                groups = {'ui-tests' if part.endswith('UITests') else 'hosted-tests'
+                          for part in parts if part.endswith('Tests')}
+                target = groups.pop() if len(groups) == 1 and not any(part in ('.', '..') for part in parts) else 'unknown'
+                for kind, prefix in (('true', 'XCTAssertTrue failed - '),
+                                     ('false', 'XCTAssertFalse failed - '),
+                                     ('equal', 'XCTAssertEqual failed: '),
+                                     ('unwrap', 'XCTUnwrap failed: ')):
+                    if message.startswith(prefix):
+                        # Only exact, type-qualified failed operands; never quoted suffix text.
+                        if kind == 'equal' and message.partition(' - ')[0] in (
+                            'XCTAssertEqual failed: ("XCTWaiterResult(rawValue: 2)") is not equal to ("XCTWaiterResult(rawValue: 1)")',
+                            'XCTAssertEqual failed: ("XCTWaiter.Result(rawValue: 2)") is not equal to ("XCTWaiter.Result(rawValue: 1)")',
+                        ):
+                            kind = 'wait-timeout'
+                        return f'assertion-{kind}-target-{target}'
+                return 'unknown'
             return 'test-assertion'
     # XCTest assertion bodies above are not independent timeout evidence.
     for line in lines:
@@ -182,6 +211,12 @@ def run_profile(profile, source, logs):
                     category = 'unknown'
                 try:
                     print(f'app-tests-{category}: failed', flush=True)
+                    if category == 'test-assertion':
+                        detail = classify_app_tests_failure(logs / 'app-tests.log', assertion_detail=True)
+                        if detail in {f'assertion-{kind}-target-{target}'
+                                      for kind in ('true', 'false', 'equal', 'unwrap', 'wait-timeout')
+                                      for target in ('hosted-tests', 'ui-tests', 'unknown')}:
+                            print(f'app-tests-{detail}: failed', flush=True)
                     if category == 'test-build':
                         reason = classify_app_tests_failure(logs / 'app-tests.log', build_reason=True)
                         if reason.startswith('build-'):
