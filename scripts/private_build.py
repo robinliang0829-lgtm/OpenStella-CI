@@ -22,6 +22,55 @@ def run_stage(label, args, source, logs, env=None):
     if result.returncode:
         raise StageFailed(label)
 
+def classify_app_tests_failure(log):
+    """Return a fixed evidence category; never return private diagnostics."""
+    try:
+        # Bound allocation even if the file grows; never classify a partial log.
+        limit = 1024 * 1024
+        with log.open('rb') as output:
+            data = output.read(limit + 1)
+        if len(data) > limit:
+            return 'unknown'
+        text = data.decode('utf-8')
+    except Exception:
+        return 'unknown'
+    # Each line gets only a fixed number of forward scans: never retry a
+    # greedy suffix at every diagnostic prefix on adversarial input.
+    lines = text.split('\n')
+    for line in lines:
+        assertion = re.search(r'\b(?:XCTAssert\w*|XCTUnwrap)\b', line)
+        body = line.partition('error: -[')[2].partition('] : ')[2]
+        if ((assertion and re.search(r'\bfailed\b', line[assertion.end():]))
+                or re.match(r'failed\b', body)):
+            return 'test-assertion'
+    # XCTest assertion bodies above are not independent timeout evidence.
+    for line in lines:
+        body = line.partition('] : ')[2] if line.startswith('error: -[') else line
+        if (re.match(r'Test execution timed out\b', body)
+                or body.startswith(('Exceeded execution time allowance of ',
+                                    'Asynchronous wait failed: Exceeded timeout of '))):
+            return 'test-timeout'
+    if re.search(r'(?:Undefined symbols for architecture |linker command failed)', text):
+        return 'link'
+    if re.search(r'(?:Unable to find a destination matching the provided destination specifier|Ineligible destinations for the )', text):
+        return 'destination'
+    if re.search(r'Failed to (?:install|launch) the app', text):
+        return 'install-launch'
+    if any(any(marker in line.partition('error:')[2] for marker in (
+            'has no member ', 'is only available in iOS ', 'is unavailable in iOS'))
+           for line in lines):
+        return 'compile-member-api'
+    if ('error: cannot convert value of type ' in text
+            or any(line.partition('error: cannot find ')[2].find(' in scope') > 0
+                   for line in lines)):
+        return 'compile'
+    if re.search(r'(?:CoreSimulatorService connection became invalid|(?:Failed|Unable) to boot (?:the )?[Ss]imulator|Failed to establish communication with the test runner)', text):
+        return 'simulator-startup-communication'
+    if any(marker in text for marker in ('** TEST BUILD FAILED **', '** BUILD FAILED **', 'Testing cancelled because the build failed.')):
+        return 'test-build'
+    return 'unknown'
+
+
 def build_plan(profile):
     swift = [('swift-package-tests', ['swift', 'test', '--package-path', 'ios/Packages/OpenStellaKit'])]
     if profile == 'kit':
@@ -77,7 +126,19 @@ def run_profile(profile, source, logs):
                         break
                 except OSError:
                     time.sleep(0.2)
-            run_stage('app-tests', ['xcodebuild', 'test', '-project', 'ios/OpenStella.xcodeproj', '-scheme', 'OpenStella', '-destination', f'id={udid}', '-parallel-testing-enabled', 'NO', '-derivedDataPath', str(logs / 'derived'), '-resultBundlePath', str(logs / 'app.xcresult'), 'OPENSTELLA_API_BASE_URL=http://127.0.0.1:18788', 'OPENSTELLA_ALLOWS_ARBITRARY_LOADS=YES', 'CODE_SIGNING_ALLOWED=NO'], source, logs)
+            try:
+                run_stage('app-tests', ['xcodebuild', 'test', '-project', 'ios/OpenStella.xcodeproj', '-scheme', 'OpenStella', '-destination', f'id={udid}', '-parallel-testing-enabled', 'NO', '-derivedDataPath', str(logs / 'derived'), '-resultBundlePath', str(logs / 'app.xcresult'), 'OPENSTELLA_API_BASE_URL=http://127.0.0.1:18788', 'OPENSTELLA_ALLOWS_ARBITRARY_LOADS=YES', 'CODE_SIGNING_ALLOWED=NO'], source, logs)
+            except StageFailed:
+                # Diagnostics are best-effort; never replace the business failure.
+                try:
+                    category = classify_app_tests_failure(logs / 'app-tests.log')
+                except Exception:
+                    category = 'unknown'
+                try:
+                    print(f'app-tests-{category}: failed', flush=True)
+                except Exception:
+                    pass
+                raise
         finally:
             process.terminate()
             try:
