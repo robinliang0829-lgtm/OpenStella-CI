@@ -88,3 +88,31 @@ Manual workflow dispatch supports the same `sha` and `target` inputs.
 - macOS: package tests, XcodeGen, compatible iPhone simulator and app/UI tests without code signing.
 
 There is deliberately no automatic private status callback or binary publishing credential in this baseline. A maintainer can review the public pass/fail result for the requested source SHA; private reporting/publishing can be added separately without exposing source or broad credentials.
+
+## OpenAstra World Core pipeline (second project)
+
+`openastra-world-core` (private, Apache-2.0) runs its gate on this repository's free
+runners for the same reason: the source account's Actions are billing-locked. It is a
+separate workflow (`world-core-ci.yml`), a separate event type, a separate read-only
+deploy key (`WORLD_CORE_SOURCE_READ_SSH_KEY`, scoped to `openastra-world-core` only) and
+a separate parameter set — the OpenStella pipeline above is untouched.
+
+- Event: `openastra-world-core-ci`; payload is exactly `{sha, target}` with
+  `target ∈ {all, node}`; `sha` must be a full lowercase 40-hex commit inside a reviewed
+  ref of the source repo: `refs/heads/main` or `refs/heads/integ/wc` (the integration
+  branch under review; drop it from `TRUSTED_REFS` after the work lands on `main`).
+- Release path: a published release **in this repository** tagged `wc-ci-<full-sha>`
+  selects `target=all`. A release in the private repository does not dispatch anything.
+- Builds run `npm ci` and then the repository's own gate: typecheck, four layer suites,
+  contract conformance, migration + bundle freshness, e2e drill, cross-runtime parity,
+  asset hashes, and the release gate (which packs and re-imports the tarball).
+- Same privacy contract as above: public output is stage pass/fail only; stdout/stderr
+  stay in runner-local private files; the source, logs and `dist/` are deleted afterwards;
+  no artifacts, caches or releases are uploaded. Godot is not installed on the runner, so
+  the Godot-specific contract replay reports a skip (it is not a failure).
+
+```sh
+gh api --method POST repos/robinliang0829-lgtm/OpenStella-CI/dispatches --input - <<JSON
+{"event_type":"openastra-world-core-ci","client_payload":{"sha":"<40-hex>","target":"all"}}
+JSON
+```

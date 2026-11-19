@@ -1,0 +1,83 @@
+name: OpenAstra World Core CI
+
+# Private-source validation for openastra-world-core, run on a public repository's
+# free hosted runners because the source account's Actions are billing-locked.
+# No application source, logs, caches or artifacts are published; public output is
+# stage pass/fail only.
+on:
+  repository_dispatch:
+    types: [openastra-world-core-ci]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full trusted source commit SHA
+        type: string
+        required: true
+      target:
+        description: Validation profile
+        type: choice
+        options: [all, node]
+        default: all
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: world-core-ci
+  cancel-in-progress: false
+jobs:
+  request:
+    name: Validate non-sensitive request
+    if: >-
+      github.repository == 'robinliang0829-lgtm/OpenStella-CI' &&
+      github.actor == github.repository_owner &&
+      (github.event_name != 'release' ||
+      (startsWith(github.event.release.tag_name, 'wc-ci-')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      target: ${{ steps.request.outputs.target }}
+      ci_sha: ${{ steps.request.outputs.ci_sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Validate trigger, actor and parameter allowlist
+        id: request
+        run: python3 scripts/world_core_request.py
+  node:
+    name: Contract, services, SDK, adapters, presentation
+    needs: request
+    if: needs.request.outputs.target == 'all' || needs.request.outputs.target == 'node'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Deterministic gate: no screenshots, no engine-specific evidence runs.
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.request.outputs.ci_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Fetch trusted source without retaining the read key
+        env:
+          REQUESTED_SHA: ${{ needs.request.outputs.sha }}
+          WORLD_CORE_SOURCE_READ_SSH_KEY: ${{ secrets.WORLD_CORE_SOURCE_READ_SSH_KEY }}
+        run: python3 scripts/world_core_checkout.py
+      - name: Validate source with private tool output
+        run: python3 scripts/world_core_build.py node
+      - name: Remove private source and raw reports
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          for name in ('world-core-source', 'world-core-output'):
+              shutil.rmtree(pathlib.Path(os.environ['RUNNER_TEMP']) / name, ignore_errors=True)
+          PY
