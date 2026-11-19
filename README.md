@@ -46,7 +46,7 @@ Only the repository owner can trigger privileged builds. Source SHAs must be ful
 1. Review the final private commit and its full diff, including build scripts, dependency changes, and tests. Approval authorizes code execution, not merge. A baseline SHA or a branch name is not approval of the final UI work.
 2. In a separate reviewed public CI change, add only that exact full SHA to `scripts/private_checkout.py::APPROVED_FEATURE_SHAS` on CI `main`. Do not publish private diffs, code, or branch descriptions. Never load approvals from payloads, environment variables, URLs, or private source files. The local contract test must assert the explicitly reviewed approval set and be updated deliberately alongside each approval or revocation.
 3. Dispatch the approved SHA with an existing target. The helper fetches it only from the fixed OpenStella repository, requires a commit object, and verifies final `HEAD` equals the requested SHA. A fetch or integrity failure rejects the build; there is no arbitrary-ref fallback. Parents, children, and other branch commits do not inherit approval (commits already in trusted `main` remain allowed independently).
-4. A changed feature SHA requires fresh review and approval. Remove temporary entries after acceptance or revocation. The currently approved snapshot is `886ff76ad754acd58bd30aed65ce5a63c3c290cf`; this is execution approval only, not merge approval.
+4. A changed feature SHA requires fresh review and approval. Remove temporary entries after acceptance or revocation. The currently approved snapshot is `3b5c00ebe78eb72394c35de23c7ecc26f80f8e2f`; this is execution approval only, not merge approval.
 
 ### Trusted CI snapshot and revocation limits
 
