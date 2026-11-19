@@ -22,7 +22,7 @@ def run_stage(label, args, source, logs, env=None):
     if result.returncode:
         raise StageFailed(label)
 
-def classify_app_tests_failure(log):
+def classify_app_tests_failure(log, *, build_reason=False):
     """Return a fixed evidence category; never return private diagnostics."""
     try:
         # Bound allocation even if the file grows; never classify a partial log.
@@ -67,6 +67,31 @@ def classify_app_tests_failure(log):
     if re.search(r'(?:CoreSimulatorService connection became invalid|(?:Failed|Unable) to boot (?:the )?[Ss]imulator|Failed to establish communication with the test runner)', text):
         return 'simulator-startup-communication'
     if any(marker in text for marker in ('** TEST BUILD FAILED **', '** BUILD FAILED **', 'Testing cancelled because the build failed.')):
+        if build_reason:
+            for line in lines:
+                if line.startswith('error: '):
+                    message = line[7:]
+                else:
+                    location, separator, message = line.partition(': error: ')
+                    # Conservative absolute Swift locations only; reject quoted/referenced text.
+                    if not separator or not re.fullmatch(r'/[A-Za-z0-9_./ -]+\.swift:[0-9]+:[0-9]+', location):
+                        continue
+                # Fixed starts/required phrases only; no identifiers leave here.
+                for reason, prefixes, required in (
+                    ('build-actor-isolation', ('call to main actor-isolated ', 'main actor-isolated ', 'actor-isolated '), ()),
+                    ('build-argument-shape', ('missing argument for parameter ', 'missing arguments for parameters ', 'extra argument ', 'extra arguments at positions ', 'incorrect argument label', 'no exact matches in call to '), ()),
+                    ('build-try-await', ("call can throw but is not marked with 'try'", "expression is 'async' but is not marked with 'await'", "call is 'async' but is not marked with 'await'"), ()),
+                    ('build-override-conformance', ('type ',), (' does not conform to protocol ',)),
+                    ('build-override-conformance', ('method does not override any method from its superclass', 'property does not override any property from its superclass'), ()),
+                    ('build-type-inference', ('generic parameter ',), (' could not be inferred',)),
+                    ('build-type-inference', ('the compiler is unable to type-check this expression in reasonable time', 'unable to type-check this expression in reasonable time', 'ambiguous use of '), ()),
+                    ('build-syntax-parser', ('expected expression', 'expected declaration', "expected '}'"), ()),
+                    ('build-module-import', ('no such module ', 'missing required module ', 'failed to build module ', 'could not build module '), ()),
+                    ('build-compiler-internal', ('failed to produce diagnostic for expression', 'compiler crashed'), ()),
+                    ('build-resource-limit', ('out of memory', 'cannot allocate memory', 'unable to make temporary file: No space left on device'), ()),
+                ):
+                    if message.startswith(prefixes) and all(marker in message for marker in required):
+                        return reason
         return 'test-build'
     return 'unknown'
 
@@ -136,6 +161,10 @@ def run_profile(profile, source, logs):
                     category = 'unknown'
                 try:
                     print(f'app-tests-{category}: failed', flush=True)
+                    if category == 'test-build':
+                        reason = classify_app_tests_failure(logs / 'app-tests.log', build_reason=True)
+                        if reason.startswith('build-'):
+                            print(f'app-tests-{reason}: failed', flush=True)
                 except Exception:
                     pass
                 raise

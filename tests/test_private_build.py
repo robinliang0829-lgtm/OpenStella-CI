@@ -118,6 +118,231 @@ class BuildTests(unittest.TestCase):
                         log.write_text(quotation)
                         self.assertEqual(helper.classify_app_tests_failure(log), 'unknown')
 
+    def assert_build_reason(self, expected, diagnostic):
+        helper = importlib.import_module('scripts.private_build')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            log.write_text('/private/Hidden.swift:12:3: error: ' + diagnostic
+                           + '\nPRIVATE_SOURCE_CANARY sk-fake-key testPrivate\n** TEST BUILD FAILED **\n')
+            public = io.StringIO()
+            with contextlib.redirect_stdout(public), contextlib.redirect_stderr(public):
+                self.assertEqual(helper.classify_app_tests_failure(log), 'test-build')
+                self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), expected)
+            self.assertEqual(public.getvalue(), '')
+
+    def test_build_reason_unknown_keeps_test_build_fallback(self):
+        self.assert_build_reason('test-build', 'unrecognized PRIVATE_SOURCE_CANARY')
+
+    def test_build_reason_actor_isolation(self):
+        self.assert_build_reason('build-actor-isolation', 'call to main actor-isolated instance method fixture() in a synchronous nonisolated context')
+        self.assert_build_reason('build-actor-isolation', 'main actor-isolated property fixture cannot be referenced from a nonisolated context')
+
+    def test_build_reason_signature_mismatch(self):
+        self.assert_build_reason('build-argument-shape', "missing argument for parameter 'fixture' in call")
+        self.assert_build_reason('build-argument-shape', 'extra argument fixture in call')
+        self.assert_build_reason('build-argument-shape', 'incorrect argument label in call (have: fixture:, expected: other:)')
+        self.assert_build_reason('build-argument-shape', 'no exact matches in call to initializer')
+
+    def test_build_reason_try_await(self):
+        self.assert_build_reason('build-try-await', "call can throw but is not marked with 'try'")
+        self.assert_build_reason('build-try-await', "expression is 'async' but is not marked with 'await'")
+
+    def test_build_reason_override_conformance(self):
+        self.assert_build_reason('build-override-conformance', 'type Fixture does not conform to protocol FixtureProtocol')
+        self.assert_build_reason('build-override-conformance', 'method does not override any method from its superclass')
+
+    def test_build_reason_generic_inference(self):
+        self.assert_build_reason('build-type-inference', 'generic parameter Fixture could not be inferred')
+        self.assert_build_reason('build-type-inference', 'the compiler is unable to type-check this expression in reasonable time; try breaking up the expression into distinct sub-expressions')
+        self.assert_build_reason('build-type-inference', 'ambiguous use of fixture')
+
+    def test_build_reason_syntax_parser(self):
+        self.assert_build_reason('build-syntax-parser', 'expected expression')
+        self.assert_build_reason('build-syntax-parser', 'expected declaration')
+
+    def test_build_reason_module_import(self):
+        self.assert_build_reason('build-module-import', "no such module 'Fixture'")
+        self.assert_build_reason('build-module-import', 'missing required module Fixture')
+
+    def test_build_reason_compiler_internal(self):
+        self.assert_build_reason('build-compiler-internal', 'failed to produce diagnostic for expression; please submit a bug report')
+
+    def test_build_reason_resource_limit(self):
+        self.assert_build_reason('build-resource-limit', 'out of memory')
+        self.assert_build_reason('build-resource-limit', 'unable to make temporary file: No space left on device')
+
+    def test_build_reason_status_is_supplemental_best_effort_and_build_only(self):
+        from unittest.mock import patch, MagicMock
+        import json
+        helper = importlib.import_module('scripts.private_build')
+        examples = [
+            ('actor-isolation', 'main actor-isolated property fixture cannot be referenced'),
+            ('argument-shape', 'incorrect argument labels in call (have: fixture:, expected: other:)'),
+            ('try-await', "call can throw but is not marked with 'try'"),
+            ('override-conformance', 'type Fixture does not conform to protocol FixtureProtocol'),
+            ('type-inference', 'the compiler is unable to type-check this expression in reasonable time'),
+            ('syntax-parser', 'expected expression'),
+            ('module-import', 'no such module Fixture'),
+            ('compiler-internal', 'failed to produce diagnostic for expression'),
+            ('resource-limit', 'out of memory'),
+            (None, 'unrecognized PRIVATE_SOURCE_CANARY'),
+        ]
+        for reason, diagnostic in examples:
+            for fault in [None, 'read', 'classifier', 'write', 'flush']:
+                with self.subTest(reason=reason, fault=fault), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    original = helper.StageFailed('PRIVATE_SOURCE_CANARY sk-fake-key /private/Hidden testPrivate')
+                    process = MagicMock()
+                    process.poll.return_value = None
+                    process.wait.side_effect = [helper.subprocess.TimeoutExpired('fixture', 10), None]
+                    devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [
+                        {'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+
+                    def stage(label, args, cwd, logs):
+                        if label == 'app-tests':
+                            (logs / 'app-tests.log').write_text('error: ' + diagnostic
+                                + '\nPRIVATE_SOURCE_CANARY sk-fake-key /private/Hidden testPrivate\n** BUILD FAILED **\n')
+                            print('app-tests: failed', flush=True)
+                            raise original
+
+                    real_classifier = helper.classify_app_tests_failure
+                    def classify(log, **kwargs):
+                        if kwargs.get('build_reason'):
+                            if fault == 'read':
+                                with failing_log_reads(MemoryError('PRIVATE_SOURCE_CANARY')):
+                                    return real_classifier(log, **kwargs)
+                            if fault == 'classifier':
+                                raise helper.StageFailed('PRIVATE_DIAGNOSTIC_FAILURE')
+                        return real_classifier(log, **kwargs)
+
+                    class Output(io.StringIO):
+                        def write(self, text):
+                            if fault == 'write' and text.startswith('app-tests-build-'):
+                                raise OSError('PRIVATE_SOURCE_CANARY')
+                            return super().write(text)
+                        def flush(self):
+                            if fault == 'flush' and 'app-tests-build-' in self.getvalue():
+                                raise MemoryError('PRIVATE_SOURCE_CANARY')
+                            return super().flush()
+
+                    public, stderr = Output(), io.StringIO()
+                    with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'), patch.object(helper, 'classify_app_tests_failure', side_effect=classify) as classified:
+                        with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                            with self.assertRaises(helper.StageFailed) as caught:
+                                helper.run_profile('ios', root, root / 'logs')
+                    self.assertIs(caught.exception, original)
+                    expected = 'app-tests: failed\napp-tests-test-build: failed\n'
+                    if reason and fault in (None, 'flush'):
+                        expected += f'app-tests-build-{reason}: failed\n'
+                    self.assertEqual(public.getvalue(), expected)
+                    self.assertEqual(stderr.getvalue(), '')
+                    self.assertEqual(classified.call_count, 2)
+                    self.assertEqual(classified.call_args.kwargs, {'build_reason': True})
+                    process.terminate.assert_called_once_with()
+                    process.kill.assert_called_once_with()
+                    self.assertEqual(process.wait.call_count, 2)
+                    self.assertEqual(process.wait.call_args_list[0].kwargs, {'timeout': 10})
+
+    def test_build_reason_explanatory_location_is_not_diagnostic(self):
+        self.assert_referenced_build_diagnostic_safe(
+            'expected text: /private/Hidden.swift:12:3: error: expected expression')
+
+    def test_build_reason_blockquoted_location_is_not_diagnostic(self):
+        self.assert_referenced_build_diagnostic_safe(
+            '> /private/Hidden.swift:12:3: error: no such module Fixture')
+
+    def test_build_reason_quoted_location_is_not_diagnostic(self):
+        self.assert_referenced_build_diagnostic_safe(
+            '"/private/Hidden.swift:12:3: error: out of memory"')
+
+    def test_build_reason_warning_location_is_not_diagnostic(self):
+        self.assert_referenced_build_diagnostic_safe(
+            'warning: /private/Hidden.swift:12:3: error: expected expression')
+
+    def test_build_reason_note_location_is_not_diagnostic(self):
+        self.assert_referenced_build_diagnostic_safe(
+            'note: /private/Hidden.swift:12:3: error: no such module Fixture')
+
+    def assert_referenced_build_diagnostic_safe(self, diagnostic):
+        from unittest.mock import patch, MagicMock
+        import json
+        helper = importlib.import_module('scripts.private_build')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / 'app-tests.log'
+            for summary, expected in [('', 'unknown'), ('\n** BUILD FAILED **\n', 'test-build')]:
+                with self.subTest(layer='classifier', summary=bool(summary)):
+                    log.write_text(diagnostic + summary)
+                    public, stderr = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                        self.assertEqual(helper.classify_app_tests_failure(log), expected)
+                        self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), expected)
+                    self.assertEqual(public.getvalue(), '')
+                    self.assertEqual(stderr.getvalue(), '')
+
+            original = helper.StageFailed('PRIVATE_SOURCE_CANARY sk-fake-key testPrivate')
+            process = MagicMock()
+            process.poll.return_value = None
+            process.wait.side_effect = [helper.subprocess.TimeoutExpired('fixture', 10), None]
+            devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [
+                {'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+
+            def stage(label, args, cwd, logs):
+                if label == 'app-tests':
+                    (logs / 'app-tests.log').write_text(diagnostic
+                        + '\nPRIVATE_SOURCE_CANARY sk-fake-key testPrivate\n** BUILD FAILED **\n')
+                    print('app-tests: failed', flush=True)
+                    raise original
+
+            public, stderr = io.StringIO(), io.StringIO()
+            with self.subTest(layer='orchestration'):
+                with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'):
+                    with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(helper.StageFailed) as caught:
+                            helper.run_profile('ios', root, root / 'logs')
+                self.assertIs(caught.exception, original)
+                self.assertEqual(public.getvalue(), 'app-tests: failed\napp-tests-test-build: failed\n')
+                self.assertEqual(stderr.getvalue(), '')
+                process.terminate.assert_called_once_with()
+                process.kill.assert_called_once_with()
+                self.assertEqual(process.wait.call_count, 2)
+                self.assertEqual(process.wait.call_args_list[0].kwargs, {'timeout': 10})
+                self.assertEqual(process.wait.call_args_list[1].args, ())
+                self.assertEqual(process.wait.call_args_list[1].kwargs, {})
+
+    def test_build_reason_quotes_non_build_evidence_and_read_failures_stay_safe(self):
+        helper = importlib.import_module('scripts.private_build')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            public = io.StringIO()
+            with contextlib.redirect_stdout(public), contextlib.redirect_stderr(public):
+                for diagnostic, expected in [
+                    ('error: missing argument for parameter fixture in call', 'unknown'),
+                    ('error: expected expression\n** BUILD FAILED **', 'build-syntax-parser'),
+                    ('"error: expected expression"\n** BUILD FAILED **', 'test-build'),
+                    ('expected text: error: ambiguous use of fixture\n** BUILD FAILED **', 'test-build'),
+                    ('> error: no exact matches in call to fixture\n** BUILD FAILED **', 'test-build'),
+                    ('/private/Hidden.swift:not-line:3: error: out of memory\n** BUILD FAILED **', 'test-build'),
+                    ('warning: no such module Fixture\n** BUILD FAILED **', 'test-build'),
+                    ('error: "no such module Fixture"\n** BUILD FAILED **', 'test-build'),
+                    ('error: -[Fixture testPrivate] : XCTUnwrap failed: error: expected expression\n** BUILD FAILED **', 'test-assertion'),
+                    ('error: XCTAssertEqual failed: quoted\nerror: ambiguous use of fixture\n** BUILD FAILED **', 'test-assertion'),
+                    ('error: cannot find fixture in scope\nerror: expected expression\n** BUILD FAILED **', 'compile'),
+                    ('Test execution timed out\nerror: no such module Fixture\n** BUILD FAILED **', 'test-timeout'),
+                ]:
+                    with self.subTest(expected=expected):
+                        log.write_text(diagnostic)
+                        self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), expected)
+                log.write_bytes(b'\xfferror: out of memory\n** BUILD FAILED **')
+                self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), 'unknown')
+                log.write_bytes(b'error: out of memory\n** BUILD FAILED **\n' + b' ' * (1024 * 1024))
+                self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), 'unknown')
+                with failing_log_reads(MemoryError('PRIVATE_SOURCE_CANARY')):
+                    self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), 'unknown')
+                log.unlink()
+                self.assertEqual(helper.classify_app_tests_failure(log, build_reason=True), 'unknown')
+            self.assertEqual(public.getvalue(), '')
+
     def test_app_failure_classifier_recognizes_explicit_test_build_failures(self):
         helper = importlib.import_module('scripts.private_build')
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,7 +456,11 @@ class BuildTests(unittest.TestCase):
                 self.assertIs(caught.exception, original)
                 self.assertEqual(public.getvalue(), f'app-tests: failed\napp-tests-{category}: failed\n')
                 self.assertEqual(stderr.getvalue(), '')
-                classify.assert_called_once_with(logs / 'app-tests.log')
+                if category == 'test-build':
+                    self.assertEqual(classify.call_count, 2)
+                    self.assertEqual(classify.call_args.kwargs, {'build_reason': True})
+                else:
+                    classify.assert_called_once_with(logs / 'app-tests.log')
                 process.terminate.assert_called_once_with()
                 self.assertEqual(process.wait.call_args_list[0].kwargs, {'timeout': 10})
                 if kill_required:
@@ -309,6 +538,12 @@ class BuildTests(unittest.TestCase):
                 self.assertEqual(process.wait.call_args_list[1].kwargs, {})
 
     def test_adversarial_diagnostics_finish_in_isolated_processes_and_cleanup(self):
+        self.assert_diagnostic_pressure('base')
+
+    def test_build_reason_pressure_finishes_before_cleanup_deadline(self):
+        self.assert_diagnostic_pressure('build')
+
+    def assert_diagnostic_pressure(self, mode):
         import subprocess
         import textwrap
         child = textwrap.dedent('''\
@@ -331,7 +566,9 @@ class BuildTests(unittest.TestCase):
                 'many-short-lines': 'error: \\n',
             }
             pattern = patterns[sys.argv[1]]
-            diagnostic = pattern * (limit // len(pattern))
+            summary = '\\n** BUILD FAILED **\\n' if sys.argv[2] == 'build' else ''
+            expected = 'test-build' if summary else 'unknown'
+            diagnostic = pattern * ((limit - len(summary)) // len(pattern)) + summary
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 log = root / 'app-tests.log'
@@ -350,7 +587,8 @@ class BuildTests(unittest.TestCase):
                         raise original
 
                 with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
-                    assert helper.classify_app_tests_failure(log) == 'unknown'
+                    assert helper.classify_app_tests_failure(log) == expected
+                    assert helper.classify_app_tests_failure(log, build_reason=True) == expected
                     with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'):
                         try:
                             helper.run_profile('ios', root, root)
@@ -358,7 +596,7 @@ class BuildTests(unittest.TestCase):
                             assert caught is original
                         else:
                             raise AssertionError('business failure was swallowed')
-                assert public.getvalue() == 'app-tests: failed\\napp-tests-unknown: failed\\n'
+                assert public.getvalue() == 'app-tests: failed\\napp-tests-' + expected + ': failed\\n'
                 assert stderr.getvalue() == ''
                 process.terminate.assert_called_once_with()
                 assert process.wait.call_args_list[0].kwargs == {'timeout': 10}
@@ -370,7 +608,7 @@ class BuildTests(unittest.TestCase):
                      'many-long-lines', 'many-short-lines']:
             with self.subTest(case=case):
                 try:
-                    result = subprocess.run([sys.executable, '-c', child, case],
+                    result = subprocess.run([sys.executable, '-c', child, case, mode],
                                             cwd=Path(__file__).parents[1],
                                             capture_output=True, text=True, timeout=10)
                 except subprocess.TimeoutExpired:
