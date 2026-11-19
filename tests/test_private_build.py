@@ -67,5 +67,26 @@ class BuildTests(unittest.TestCase):
             process.terminate.assert_called_once()
 
 
+    def test_ios_mock_and_baked_app_address_use_fixed_isolated_port(self):
+        from unittest.mock import patch, MagicMock
+        import json
+        helper = importlib.import_module('scripts.private_build')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'source'
+            source.mkdir()
+            process = MagicMock()
+            process.poll.return_value = None
+            devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [{'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+            with patch.object(helper, 'run_stage') as run, patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process) as spawn, patch.object(helper.urllib.request, 'urlopen') as health:
+                helper.run_profile('ios', source, root / 'logs')
+            self.assertEqual(spawn.call_args.kwargs.get('env', {}).get('PORT'), '18788')
+            self.assertEqual(health.call_args.args[0], 'http://127.0.0.1:18788/v0/health')
+            args = run.call_args_list[-1].args[1]
+            self.assertIn('OPENSTELLA_API_BASE_URL=http://127.0.0.1:18788', args)
+            self.assertIn('OPENSTELLA_ALLOWS_ARBITRARY_LOADS=YES', args)
+            process.terminate.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

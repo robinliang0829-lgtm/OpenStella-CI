@@ -66,18 +66,18 @@ def run_profile(profile, source, logs):
     devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '-j'], text=True, stderr=subprocess.DEVNULL))['devices']
     udid = choose_simulator(sdk, devices)
     with (logs / 'ui-api.log').open('wb') as output:
-        process = subprocess.Popen(['node', 'ios/UITestServer/server.mjs'], cwd=source, stdout=output, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(['node', 'ios/UITestServer/server.mjs'], cwd=source, env={**os.environ, 'PORT': '18788'}, stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 30
             while True:
                 if process.poll() is not None or time.monotonic() >= deadline:
                     raise StageFailed('ui-api-readiness')
                 try:
-                    with urllib.request.urlopen('http://127.0.0.1:8787/v0/health', timeout=1):
+                    with urllib.request.urlopen('http://127.0.0.1:18788/v0/health', timeout=1):
                         break
                 except OSError:
                     time.sleep(0.2)
-            run_stage('app-tests', ['xcodebuild', 'test', '-project', 'ios/OpenStella.xcodeproj', '-scheme', 'OpenStella', '-destination', f'id={udid}', '-parallel-testing-enabled', 'NO', '-derivedDataPath', str(logs / 'derived'), '-resultBundlePath', str(logs / 'app.xcresult'), 'CODE_SIGNING_ALLOWED=NO'], source, logs)
+            run_stage('app-tests', ['xcodebuild', 'test', '-project', 'ios/OpenStella.xcodeproj', '-scheme', 'OpenStella', '-destination', f'id={udid}', '-parallel-testing-enabled', 'NO', '-derivedDataPath', str(logs / 'derived'), '-resultBundlePath', str(logs / 'app.xcresult'), 'OPENSTELLA_API_BASE_URL=http://127.0.0.1:18788', 'OPENSTELLA_ALLOWS_ARBITRARY_LOADS=YES', 'CODE_SIGNING_ALLOWED=NO'], source, logs)
         finally:
             process.terminate()
             try:
