@@ -22,7 +22,7 @@ def run_stage(label, args, source, logs, env=None):
     if result.returncode:
         raise StageFailed(label)
 
-def classify_app_tests_failure(log, *, build_reason=False):
+def classify_app_tests_failure(log, *, build_reason=False, type_inference_detail=False):
     """Return a fixed evidence category; never return private diagnostics."""
     try:
         # Bound allocation even if the file grows; never classify a partial log.
@@ -67,8 +67,9 @@ def classify_app_tests_failure(log, *, build_reason=False):
     if re.search(r'(?:CoreSimulatorService connection became invalid|(?:Failed|Unable) to boot (?:the )?[Ss]imulator|Failed to establish communication with the test runner)', text):
         return 'simulator-startup-communication'
     if any(marker in text for marker in ('** TEST BUILD FAILED **', '** BUILD FAILED **', 'Testing cancelled because the build failed.')):
-        if build_reason:
+        if build_reason or type_inference_detail:
             for line in lines:
+                location = ''
                 if line.startswith('error: '):
                     message = line[7:]
                 else:
@@ -91,6 +92,26 @@ def classify_app_tests_failure(log, *, build_reason=False):
                     ('build-resource-limit', ('out of memory', 'cannot allocate memory', 'unable to make temporary file: No space left on device'), ()),
                 ):
                     if message.startswith(prefixes) and all(marker in message for marker in required):
+                        if type_inference_detail and reason == 'build-type-inference':
+                            if message.startswith(('the compiler is unable to type-check this expression in reasonable time',
+                                                   'unable to type-check this expression in reasonable time')):
+                                kind = 'typecheck-complexity'
+                            elif message.startswith('ambiguous use of '):
+                                kind = 'ambiguous-use'
+                            else:
+                                kind = 'generic-inference'
+                            # Use only this error's directory parts, never filenames or summaries.
+                            parts = location.rsplit(':', 2)[0].split('/')[1:-1]
+                            target = 'unknown'
+                            if parts and not any(part in ('.', '..') for part in parts):
+                                if any(left == 'ios' and right == 'OpenStella'
+                                       for left, right in zip(parts, parts[1:])):
+                                    target = 'app'
+                                if any(part.endswith('UITests') for part in parts):
+                                    target = 'ui-tests'
+                                elif any(part.endswith('Tests') for part in parts):
+                                    target = 'hosted-tests'
+                            return f'build-{kind}-target-{target}'
                         return reason
         return 'test-build'
     return 'unknown'
@@ -165,6 +186,12 @@ def run_profile(profile, source, logs):
                         reason = classify_app_tests_failure(logs / 'app-tests.log', build_reason=True)
                         if reason.startswith('build-'):
                             print(f'app-tests-{reason}: failed', flush=True)
+                            if reason == 'build-type-inference':
+                                detail = classify_app_tests_failure(logs / 'app-tests.log', type_inference_detail=True)
+                                if detail in {f'build-{kind}-target-{target}'
+                                              for kind in ('typecheck-complexity', 'ambiguous-use', 'generic-inference')
+                                              for target in ('app', 'hosted-tests', 'ui-tests', 'unknown')}:
+                                    print(f'app-tests-{detail}: failed', flush=True)
                 except Exception:
                     pass
                 raise

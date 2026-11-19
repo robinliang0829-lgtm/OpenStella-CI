@@ -156,6 +156,187 @@ class BuildTests(unittest.TestCase):
         self.assert_build_reason('build-type-inference', 'the compiler is unable to type-check this expression in reasonable time; try breaking up the expression into distinct sub-expressions')
         self.assert_build_reason('build-type-inference', 'ambiguous use of fixture')
 
+    def test_type_inference_detail_complexity(self):
+        self.assert_type_inference_detail(
+            'error: the compiler is unable to type-check this expression in reasonable time',
+            'typecheck-complexity', 'unknown')
+
+    def test_type_inference_detail_ambiguous(self):
+        self.assert_type_inference_detail(
+            'error: ambiguous use of PRIVATE_SOURCE_CANARY', 'ambiguous-use')
+
+    def test_type_inference_detail_generic(self):
+        self.assert_type_inference_detail(
+            'error: generic parameter PRIVATE_SOURCE_CANARY could not be inferred', 'generic-inference')
+
+    def test_type_inference_detail_app_target(self):
+        self.assert_type_inference_detail(
+            '/private/ios/OpenStella/Features/Hidden.swift:12:3: error: ambiguous use of PRIVATE_SOURCE_CANARY',
+            'ambiguous-use', 'app')
+
+    def test_type_inference_detail_ui_target(self):
+        self.assert_type_inference_detail(
+            '/private/ios/FixtureUITests/Hidden.swift:12:3: error: generic parameter Fixture could not be inferred',
+            'generic-inference', 'ui-tests')
+
+    def test_type_inference_detail_hosted_target(self):
+        self.assert_type_inference_detail(
+            '/private/ios/FixtureTests/Hidden.swift:12:3: error: unable to type-check this expression in reasonable time',
+            'typecheck-complexity', 'hosted-tests')
+
+    def test_type_inference_detail_matrix_is_fixed_and_same_line_only(self):
+        messages = [
+            ('typecheck-complexity', 'the compiler is unable to type-check this expression in reasonable time'),
+            ('typecheck-complexity', 'unable to type-check this expression in reasonable time'),
+            ('ambiguous-use', 'ambiguous use of PRIVATE_SOURCE_CANARY'),
+            ('generic-inference', 'generic parameter PRIVATE_SOURCE_CANARY could not be inferred'),
+        ]
+        for kind, message in messages:
+            for directory, target in [('ios/OpenStella/Features', 'app'),
+                                      ('ios/FixtureTests', 'hosted-tests'),
+                                      ('ios/FixtureUITests', 'ui-tests'),
+                                      ('Unrecognized', 'unknown')]:
+                with self.subTest(kind=kind, target=target):
+                    self.assert_type_inference_detail(
+                        f'/private/{directory}/Hidden.swift:12:3: error: {message}', kind, target)
+        for diagnostic in [
+            '/private/ios/FixtureUITests/Hidden.swift:12:3: warning: unrelated\nerror: ambiguous use of fixture',
+            '/private/ios/FixtureTests/Hidden.swift:12:3: error: unrelated\nerror: ambiguous use of fixture',
+            'CompileSwift /private/ios/FixtureTests/Hidden.swift\nerror: ambiguous use of fixture',
+            "error: ambiguous use of fixture /private/ios/FixtureUITests/Hidden.swift:12:3",
+            '/private/FixtureTests.swift:12:3: error: ambiguous use of fixture',
+            '/private/ios/OpenStellaUITestsHelper/Hidden.swift:12:3: error: ambiguous use of fixture',
+            '/private/ios/OpenStella/../Unknown/Hidden.swift:12:3: error: ambiguous use of fixture',
+            'error: ambiguous use of fixture\n/private/ios/FixtureUITests/Hidden.swift:12:3: error: generic parameter F could not be inferred',
+        ]:
+            with self.subTest(diagnostic=diagnostic):
+                self.assert_type_inference_detail(diagnostic, 'ambiguous-use', 'unknown')
+        self.assert_type_inference_detail(
+            '/private/ios/FixtureUITests/Hidden.swift:12:3: error: ambiguous use of fixture\n'
+            '/private/ios/FixtureTests/Hidden.swift:12:3: error: generic parameter F could not be inferred',
+            'ambiguous-use', 'ui-tests')
+
+    def test_type_inference_detail_references_are_not_errors(self):
+        location = '/private/ios/FixtureUITests/Hidden.swift:12:3: error: ambiguous use of PRIVATE_SOURCE_CANARY'
+        for diagnostic in ['expected text: ' + location, '> ' + location, '"' + location + '"',
+                           "'" + location + "'", 'warning: ' + location, 'note: ' + location,
+                           location.replace(': error: ', ': warning: error: '),
+                           location.replace(': error: ', ': note: error: ')]:
+            with self.subTest(diagnostic=diagnostic):
+                self.assert_type_inference_detail(diagnostic)
+
+    def test_type_inference_detail_faults_preserve_exception_and_cleanup(self):
+        for fault in ['read', 'classifier', 'write', 'flush', 'unallowlisted']:
+            with self.subTest(fault=fault):
+                self.assert_type_inference_detail(
+                    '/private/ios/FixtureTests/Hidden.swift:12:3: error: ambiguous use of PRIVATE_SOURCE_CANARY',
+                    'ambiguous-use', 'hosted-tests', fault=fault)
+
+    def test_type_inference_detail_is_bounded_silent_and_preserves_priority(self):
+        from unittest.mock import MagicMock
+        helper = importlib.import_module('scripts.private_build')
+        limit = 1024 * 1024
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            public, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                self.assertEqual(helper.classify_app_tests_failure(log, type_inference_detail=True), 'unknown')
+                prefix = b'error: ambiguous use of PRIVATE_SOURCE_CANARY\n** BUILD FAILED **\n'
+                log.write_bytes(prefix + b' ' * (limit - len(prefix)))
+                self.assertEqual(helper.classify_app_tests_failure(log, type_inference_detail=True),
+                                 'build-ambiguous-use-target-unknown')
+                with log.open('ab') as output:
+                    output.write(b' ')
+                self.assertEqual(helper.classify_app_tests_failure(log, type_inference_detail=True), 'unknown')
+                log.write_bytes(b'\xff' + prefix)
+                self.assertEqual(helper.classify_app_tests_failure(log, type_inference_detail=True), 'unknown')
+                for diagnostic, expected in [
+                    ('error: ambiguous use of fixture', 'unknown'),
+                    ('error: generic parameter fixture without required evidence\n** BUILD FAILED **', 'test-build'),
+                    ('error: expected expression\nerror: ambiguous use of fixture\n** BUILD FAILED **', 'build-syntax-parser'),
+                    ('error: XCTAssertEqual failed: error: ambiguous use of fixture\n** BUILD FAILED **', 'test-assertion'),
+                    ('error: -[Fixture testPrivate] : XCTUnwrap failed: error: ambiguous use of fixture\n** BUILD FAILED **', 'test-assertion'),
+                    ('Test execution timed out\nerror: ambiguous use of fixture\n** BUILD FAILED **', 'test-timeout'),
+                ]:
+                    with self.subTest(expected=expected):
+                        log.write_text(diagnostic)
+                        self.assertEqual(helper.classify_app_tests_failure(log, type_inference_detail=True), expected)
+                for error in [OSError('PRIVATE_SOURCE_CANARY'), MemoryError('PRIVATE_SOURCE_CANARY')]:
+                    with failing_log_reads(error):
+                        self.assertEqual(helper.classify_app_tests_failure(log, type_inference_detail=True), 'unknown')
+                stream_log = MagicMock()
+                stream = stream_log.open.return_value.__enter__.return_value
+                stream.read.return_value = prefix
+                self.assertEqual(helper.classify_app_tests_failure(stream_log, type_inference_detail=True),
+                                 'build-ambiguous-use-target-unknown')
+                stream.read.assert_called_once_with(limit + 1)
+                stream_log.open.return_value.__exit__.side_effect = MemoryError('PRIVATE_SOURCE_CANARY')
+                self.assertEqual(helper.classify_app_tests_failure(stream_log, type_inference_detail=True), 'unknown')
+            self.assertEqual(public.getvalue(), '')
+            self.assertEqual(stderr.getvalue(), '')
+
+    def assert_type_inference_detail(self, diagnostic, subtype=None, target='unknown', *, fault=None):
+        from unittest.mock import patch, MagicMock
+        import json
+        helper = importlib.import_module('scripts.private_build')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = helper.StageFailed('PRIVATE_SOURCE_CANARY sk-fake-key /private/Hidden testPrivate')
+            process = MagicMock()
+            process.poll.return_value = None
+            process.wait.side_effect = [helper.subprocess.TimeoutExpired('fixture', 10), None]
+            devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [
+                {'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+
+            def stage(label, args, cwd, logs):
+                if label == 'app-tests':
+                    (logs / 'app-tests.log').write_text(diagnostic
+                        + '\nPRIVATE_SOURCE_CANARY sk-fake-key testPrivate\n** BUILD FAILED **\n')
+                    print('app-tests: failed', flush=True)
+                    raise original
+
+            real_classifier = helper.classify_app_tests_failure
+            def classify(log, **kwargs):
+                if kwargs.get('type_inference_detail'):
+                    if fault == 'read':
+                        with failing_log_reads(MemoryError('PRIVATE_SOURCE_CANARY')):
+                            return real_classifier(log, **kwargs)
+                    if fault == 'classifier':
+                        raise helper.StageFailed('PRIVATE_DIAGNOSTIC_FAILURE')
+                    if fault == 'unallowlisted':
+                        return 'PRIVATE_SOURCE_CANARY sk-fake-key /private/Hidden testPrivate'
+                return real_classifier(log, **kwargs)
+
+            class Output(io.StringIO):
+                def write(self, text):
+                    if fault == 'write' and '-target-' in text:
+                        raise OSError('PRIVATE_SOURCE_CANARY')
+                    return super().write(text)
+                def flush(self):
+                    if fault == 'flush' and '-target-' in self.getvalue():
+                        raise MemoryError('PRIVATE_SOURCE_CANARY')
+                    return super().flush()
+
+            public, stderr = Output(), io.StringIO()
+            with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'), patch.object(helper, 'classify_app_tests_failure', side_effect=classify):
+                with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(helper.StageFailed) as caught:
+                        helper.run_profile('ios', root, root / 'logs')
+            self.assertIs(caught.exception, original)
+            expected = 'app-tests: failed\napp-tests-test-build: failed\n'
+            if subtype:
+                expected += 'app-tests-build-type-inference: failed\n'
+                if fault in (None, 'flush'):
+                    expected += f'app-tests-build-{subtype}-target-{target}: failed\n'
+            self.assertEqual(public.getvalue(), expected)
+            self.assertEqual(stderr.getvalue(), '')
+            process.terminate.assert_called_once_with()
+            process.kill.assert_called_once_with()
+            self.assertEqual(process.wait.call_count, 2)
+            self.assertEqual(process.wait.call_args_list[0].kwargs, {'timeout': 10})
+            self.assertEqual(process.wait.call_args_list[1].args, ())
+            self.assertEqual(process.wait.call_args_list[1].kwargs, {})
+
     def test_build_reason_syntax_parser(self):
         self.assert_build_reason('build-syntax-parser', 'expected expression')
         self.assert_build_reason('build-syntax-parser', 'expected declaration')
@@ -234,10 +415,14 @@ class BuildTests(unittest.TestCase):
                     expected = 'app-tests: failed\napp-tests-test-build: failed\n'
                     if reason and fault in (None, 'flush'):
                         expected += f'app-tests-build-{reason}: failed\n'
+                    detailed = reason == 'type-inference' and fault is None
+                    if detailed:
+                        expected += 'app-tests-build-typecheck-complexity-target-unknown: failed\n'
                     self.assertEqual(public.getvalue(), expected)
                     self.assertEqual(stderr.getvalue(), '')
-                    self.assertEqual(classified.call_count, 2)
-                    self.assertEqual(classified.call_args.kwargs, {'build_reason': True})
+                    self.assertEqual(classified.call_count, 3 if detailed else 2)
+                    self.assertEqual(classified.call_args.kwargs,
+                                     {'type_inference_detail': True} if detailed else {'build_reason': True})
                     process.terminate.assert_called_once_with()
                     process.kill.assert_called_once_with()
                     self.assertEqual(process.wait.call_count, 2)
@@ -543,6 +728,9 @@ class BuildTests(unittest.TestCase):
     def test_build_reason_pressure_finishes_before_cleanup_deadline(self):
         self.assert_diagnostic_pressure('build')
 
+    def test_type_inference_detail_pressure_finishes_before_cleanup_deadline(self):
+        self.assert_diagnostic_pressure('detail')
+
     def assert_diagnostic_pressure(self, mode):
         import subprocess
         import textwrap
@@ -564,10 +752,18 @@ class BuildTests(unittest.TestCase):
                 'scope-prefix': 'error: cannot find ',
                 'many-long-lines': ('error: -[XCTAssertEqual error: cannot find ' * 99) + '\\n',
                 'many-short-lines': 'error: \\n',
+                'location-prefix': '/private/Fixture.swift:12:3: error: ',
+                'many-locations': '/private/FixtureTests/Hidden.swift:12:3: error: unknown\\n',
+                'deep-location': '/d',
             }
             pattern = patterns[sys.argv[1]]
-            summary = '\\n** BUILD FAILED **\\n' if sys.argv[2] == 'build' else ''
+            summary = '\\n** BUILD FAILED **\\n' if sys.argv[2] in ('build', 'detail') else ''
             expected = 'test-build' if summary else 'unknown'
+            reason, detail = expected, expected
+            if sys.argv[1] == 'deep-location':
+                summary = '/ios/FixtureTests/Hidden.swift:12:3: error: ambiguous use of PRIVATE_SOURCE_CANARY' + summary
+                reason = 'build-type-inference'
+                detail = 'build-ambiguous-use-target-hosted-tests'
             diagnostic = pattern * ((limit - len(summary)) // len(pattern)) + summary
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -588,7 +784,9 @@ class BuildTests(unittest.TestCase):
 
                 with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
                     assert helper.classify_app_tests_failure(log) == expected
-                    assert helper.classify_app_tests_failure(log, build_reason=True) == expected
+                    assert helper.classify_app_tests_failure(log, build_reason=True) == reason
+                    if sys.argv[2] == 'detail':
+                        assert helper.classify_app_tests_failure(log, type_inference_detail=True) == detail
                     with patch.object(helper, 'run_stage', side_effect=stage), patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), patch.object(helper.subprocess, 'Popen', return_value=process), patch.object(helper.urllib.request, 'urlopen'):
                         try:
                             helper.run_profile('ios', root, root)
@@ -596,7 +794,10 @@ class BuildTests(unittest.TestCase):
                             assert caught is original
                         else:
                             raise AssertionError('business failure was swallowed')
-                assert public.getvalue() == 'app-tests: failed\\napp-tests-' + expected + ': failed\\n'
+                expected_public = 'app-tests: failed\\napp-tests-' + expected + ': failed\\n'
+                if sys.argv[1] == 'deep-location':
+                    expected_public += 'app-tests-build-type-inference: failed\\napp-tests-build-ambiguous-use-target-hosted-tests: failed\\n'
+                assert public.getvalue() == expected_public
                 assert stderr.getvalue() == ''
                 process.terminate.assert_called_once_with()
                 assert process.wait.call_args_list[0].kwargs == {'timeout': 10}
@@ -604,8 +805,11 @@ class BuildTests(unittest.TestCase):
                 assert process.wait.call_count == 2
                 print('unknown')
         ''')
-        for case in ['error-prefix', 'assert-prefix', 'xctest-prefix', 'scope-prefix',
-                     'many-long-lines', 'many-short-lines']:
+        cases = ['error-prefix', 'assert-prefix', 'xctest-prefix', 'scope-prefix',
+                 'many-long-lines', 'many-short-lines']
+        if mode == 'detail':
+            cases += ['location-prefix', 'many-locations', 'deep-location']
+        for case in cases:
             with self.subTest(case=case):
                 try:
                     result = subprocess.run([sys.executable, '-c', child, case, mode],
