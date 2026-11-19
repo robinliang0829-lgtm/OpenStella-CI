@@ -6,6 +6,9 @@ import shlex
 import subprocess
 import tempfile
 
+# Only maintainers reviewing this trusted CI configuration may approve snapshots.
+# Never populate this set from a request, environment, or private source checkout.
+APPROVED_FEATURE_SHAS = frozenset()
 SOURCE_URL = 'git@github.com:robinliang0829-lgtm/OpenStella.git'
 HOST_KEY = 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n'
 
@@ -35,10 +38,17 @@ def checkout(sha, key_material, destination):
         git('init', '--quiet')
         git('config', '--local', 'core.hooksPath', '/dev/null')
         git('remote', 'add', 'origin', SOURCE_URL)
-        git('fetch', '--quiet', '--filter=blob:none', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main')
-        if git('merge-base', '--is-ancestor', sha, 'refs/remotes/origin/main', required=False).returncode:
-            raise ValueError('Requested commit is outside trusted main history')
+        if sha in APPROVED_FEATURE_SHAS:
+            git('fetch', '--quiet', '--filter=blob:none', '--no-tags', 'origin', sha)
+        else:
+            git('fetch', '--quiet', '--filter=blob:none', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main')
+            if git('merge-base', '--is-ancestor', sha, 'refs/remotes/origin/main', required=False).returncode:
+                raise ValueError('Requested commit is outside trusted main history')
+        if git('cat-file', '-t', sha).stdout.strip() != b'commit':
+            raise ValueError('Requested object is not a commit')
         git('-c', 'advice.detachedHead=false', 'checkout', '--quiet', '--detach', sha)
+        if git('rev-parse', '--verify', 'HEAD').stdout.strip() != sha.encode('ascii'):
+            raise ValueError('Private checkout integrity check failed')
 
 
 if __name__ == '__main__':

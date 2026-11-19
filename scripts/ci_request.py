@@ -1,5 +1,15 @@
 """Validate public, non-sensitive build parameters without shell expansion."""
 import re
+import subprocess
+
+
+def trusted_ci_sha(workflow_sha, workspace):
+    if not isinstance(workflow_sha, str) or not re.fullmatch(r'[0-9a-f]{40}', workflow_sha):
+        raise ValueError('Untrusted CI snapshot')
+    result = subprocess.run(['git', '-C', workspace, 'rev-parse', '--verify', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode or result.stdout.strip() != workflow_sha.encode('ascii'):
+        raise ValueError('Untrusted CI snapshot')
+    return workflow_sha
 
 
 def validate_request(event_name, event, actor, owner):
@@ -37,7 +47,9 @@ if __name__ == '__main__':
             raise ValueError('Wrong CI repository')
         with open(os.environ['GITHUB_EVENT_PATH']) as source:
             event = json.load(source)
+        ci_sha = trusted_ci_sha(os.environ.get('GITHUB_WORKFLOW_SHA'), os.environ['GITHUB_WORKSPACE'])
         request = validate_request(os.environ['GITHUB_EVENT_NAME'], event, os.environ.get('GITHUB_ACTOR'), 'robinliang0829-lgtm')
+        request['ci_sha'] = ci_sha
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             for key, value in request.items():
                 output.write(f'{key}={value}\n')

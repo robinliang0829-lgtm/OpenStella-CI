@@ -4,6 +4,19 @@ import unittest
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_all_jobs_use_the_validated_main_ci_snapshot(self):
+        text = (Path(__file__).parents[1] / '.github/workflows/private-ci.yml').read_text()
+        jobs = dict(re.findall(r'^  (request|node|kit|ios):\n(.*?)(?=^  [a-z]+:|\Z)', text, re.MULTILINE | re.DOTALL))
+        self.assertEqual(set(jobs), {'request', 'node', 'kit', 'ios'})
+        self.assertIn('ci_sha: ${{ steps.request.outputs.ci_sha }}', jobs['request'])
+        self.assertRegex(jobs['request'], r'with:\n\s+ref: main\n\s+persist-credentials: false')
+        for name in ('node', 'kit', 'ios'):
+            with self.subTest(job=name):
+                self.assertIn('needs: request', jobs[name])
+                self.assertRegex(jobs[name], r'with:\n\s+ref: \$\{\{ needs.request.outputs.ci_sha \}\}\n\s+persist-credentials: false')
+        self.assertIn('permissions:\n  contents: read\n', text)
+        self.assertEqual(text.count('ref: '), 4)
+
     def test_private_pipeline_has_no_public_source_or_report_sinks(self):
         path = Path(__file__).parents[1] / '.github/workflows/private-ci.yml'
         self.assertTrue(path.is_file(), 'Private-source workflow is missing')

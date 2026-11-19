@@ -39,7 +39,22 @@ python3 -m unittest discover -s tests -v
 
 ## Trigger the private-source pipeline
 
-Only the repository owner can trigger privileged builds. Source SHAs must be full lowercase commit hashes in the private application's trusted `main` history. Targets are `all`, `node`, `kit`, and `ios`. The SHA is validated, not normalized; arbitrary URLs, refs, commands, and extra payload fields are rejected.
+Only the repository owner can trigger privileged builds. Source SHAs must be full lowercase commit hashes in the private application's trusted `main` history **or exact entries in the trusted CI configuration's static `APPROVED_FEATURE_SHAS` set**. That set is empty by default. Targets are `all`, `node`, `kit`, and `ios`. The SHA is validated, not normalized; arbitrary URLs, refs, commands, approval lists, and extra payload fields are rejected. Request parameters remain exactly `sha` and `target`.
+
+### Approving an unmerged snapshot
+
+1. Review the final private commit and its full diff, including build scripts, dependency changes, and tests. Approval authorizes code execution, not merge. A baseline SHA or a branch name is not approval of the final UI work.
+2. In a separate reviewed public CI change, add only that exact full SHA to `scripts/private_checkout.py::APPROVED_FEATURE_SHAS` on CI `main`. Do not publish private diffs, code, or branch descriptions. Never load approvals from payloads, environment variables, URLs, or private source files. The local contract test asserting the currently empty set must be updated deliberately when the first real approval is added.
+3. Dispatch the approved SHA with an existing target. The helper fetches it only from the fixed OpenStella repository, requires a commit object, and verifies final `HEAD` equals the requested SHA. A fetch or integrity failure rejects the build; there is no arbitrary-ref fallback. Parents, children, and other branch commits do not inherit approval (commits already in trusted `main` remain allowed independently).
+4. A changed feature SHA requires fresh review and approval. Remove temporary entries after acceptance or revocation. There is currently no feature SHA approved.
+
+### Trusted CI snapshot and revocation limits
+
+The request job explicitly checks out CI `main`. Before emitting any request outputs, `ci_request.py` requires the running workflow's `GITHUB_WORKFLOW_SHA` to equal that checkout's `HEAD`. It emits the verified infrastructure `ci_sha` internally, and every build job checks out that same immutable CI SHA. `ci_sha` is not a request input. If CI `main` advances between event creation and checkout, the mismatch fails closed: issue a new request using the current trusted workflow rather than bypassing the check. Release tags must likewise refer to the current trusted CI snapshot when the request checkout occurs.
+
+Removing an approval affects requests validated against the updated configuration; it does not retroactively stop jobs already validated or running. Re-running an older workflow version is not guaranteed to enforce the new guard or updated revocations. Cancel affected pending/running jobs and restrict old-version reruns operationally; disable source access if urgent containment is required. Older CI versions may not contain these protections at all.
+
+The CI repository's administrators and reviewed CI configuration remain trusted. These checks are not a sandbox against a malicious CI administrator, a modified workflow that removes them, or arbitrary old-version reruns. Read-only source access limits repository writes, and redirecting stdout/stderr prevents ordinary diagnostic publication; neither prevents malicious build/test/dependency code from using the network to exfiltrate source. Only reviewed code should be approved. No new credential scope, public report/artifact upload, or cache is introduced.
 
 ### repository_dispatch
 

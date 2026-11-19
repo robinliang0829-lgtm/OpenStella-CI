@@ -35,9 +35,11 @@ jobs:
     outputs:
       sha: ${{ steps.request.outputs.sha }}
       target: ${{ steps.request.outputs.target }}
+      ci_sha: ${{ steps.request.outputs.ci_sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: main
           persist-credentials: false
       - name: Test infrastructure privacy contracts
         env:
@@ -71,6 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.request.outputs.ci_sha }}
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -103,6 +106,7 @@ jobs:
         run: apt-get update -qq && apt-get install -y --no-install-recommends python3 git openssh-client ca-certificates > /dev/null
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.request.outputs.ci_sha }}
           persist-credentials: false
       - name: Fetch approved source without retaining the read key
         env:
@@ -131,6 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.request.outputs.ci_sha }}
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:

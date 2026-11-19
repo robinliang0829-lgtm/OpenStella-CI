@@ -13,7 +13,7 @@ class RequestTests(unittest.TestCase):
     def test_rejects_untrusted_or_malformed_dispatch_without_echoing_it(self):
         validate = importlib.import_module('scripts.ci_request').validate_request
         valid = {'sha': 'a' * 40, 'target': 'all'}
-        bad = [dict(valid, command='echo PRIVATE_SENTINEL'), dict(valid, repo='attacker/repo'), dict(valid, sha='a' * 39), dict(valid, sha='$(echo PRIVATE_SENTINEL)'), dict(valid, target='all\nPRIVATE_SENTINEL'), {'sha': 'a' * 40}, [], None]
+        bad = [dict(valid, command='echo PRIVATE_SENTINEL'), dict(valid, repo='attacker/repo'), dict(valid, url='https://attacker.invalid/repo'), dict(valid, ref='refs/heads/feature'), dict(valid, branch='feature'), dict(valid, approved_sha='b' * 40), dict(valid, ci_sha='b' * 40), dict(valid, sha='a' * 39), dict(valid, sha='$(echo PRIVATE_SENTINEL)'), dict(valid, target='all\nPRIVATE_SENTINEL'), {'sha': 'a' * 40}, [], None]
         for payload in bad:
             with self.subTest(payload=payload):
                 with self.assertRaises(ValueError) as error:
@@ -42,10 +42,39 @@ class RequestTests(unittest.TestCase):
             event.write_text(json.dumps({'action': 'openstella-ci', 'client_payload': {'sha': 'c' * 40, 'target': 'node'}}))
             env = dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_OUTPUT=str(output), GITHUB_EVENT_NAME='repository_dispatch', GITHUB_ACTOR='robinliang0829-lgtm', GITHUB_REPOSITORY='robinliang0829-lgtm/OpenStella-CI')
             script = Path(__file__).parents[1] / 'scripts/ci_request.py'
+            workspace = Path(tmp) / 'ci'
+            workspace.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(workspace), *args], stderr=subprocess.DEVNULL, text=True).strip()
+            git('init', '-q', '-b', 'main')
+            git('config', 'user.name', 'Fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            git('commit', '--allow-empty', '-qm', 'trusted CI fixture')
+            ci_sha = git('rev-parse', 'HEAD')
+            env.update(GITHUB_WORKSPACE=str(workspace), GITHUB_WORKFLOW_SHA=ci_sha)
             result = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0)
             self.assertTrue(output.exists(), 'CLI did not emit validated outputs')
-            self.assertEqual(output.read_text(), 'sha=' + 'c' * 40 + '\ntarget=node\n')
+            self.assertEqual(output.read_text(), 'sha=' + 'c' * 40 + '\ntarget=node\nci_sha=' + ci_sha + '\n')
+            output.unlink()
+            for invalid in ('0' * 40, '', 'main', 'A' * 40):
+                env['GITHUB_WORKFLOW_SHA'] = invalid
+                rejected = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertFalse(output.exists(), 'Rejected workflow must not emit outputs')
+                self.assertNotIn(invalid or 'PRIVATE_CANARY', rejected.stdout + rejected.stderr)
+            env['GITHUB_WORKFLOW_SHA'] = ci_sha
+            env['GITHUB_WORKSPACE'] = str(Path(tmp) / 'missing-workspace')
+            rejected = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse(output.exists())
+            self.assertNotIn('missing-workspace', rejected.stdout + rejected.stderr)
+            env['GITHUB_WORKSPACE'] = str(workspace)
+            env.pop('GITHUB_WORKFLOW_SHA')
+            rejected = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse(output.exists())
+            env['GITHUB_WORKFLOW_SHA'] = ci_sha
             env['GITHUB_REPOSITORY'] = 'outsider/fork'
             result = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
