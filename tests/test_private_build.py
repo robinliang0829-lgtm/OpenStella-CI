@@ -1234,13 +1234,167 @@ class OriginProtocolTests(unittest.TestCase):
             self.assertEqual(process.wait.call_args_list,
                              [unittest.mock.call(timeout=10), unittest.mock.call()])
 
+    def checkpoint_matrix(self):
+        return [(f'OPE12_CHECKPOINT_V1 checkpoint={checkpoint}',
+                 f'app-tests-checkpoint-{checkpoint}: failed')
+                for checkpoint in ('other', 'element-existence', 'accessibility-hit',
+                                   'selected-state', 'frame-containment', 'scroll-reachability',
+                                   'content-value', 'async-progress', 'request-isolation',
+                                   'scene-identity')]
+
     def test_origin_matrix_is_supplemental_deduplicated_and_fixed_order(self):
-        matrix = self.matrix()
-        self.assertEqual(len(matrix), 30)
+        matrix = self.matrix() + self.checkpoint_matrix()
+        self.assertEqual(len(matrix), 40)
         diagnostic = ('error: XCTAssertEqual failed\nPRIVATE_SOURCE_CANARY sk-fake-key\n'
                       + '\r\n'.join(marker for marker, _ in reversed(matrix)) + '\r\n'
                       + '\n'.join(marker for marker, _ in matrix))
         self.assert_origin_run(diagnostic, [status for _, status in matrix])
+
+    def test_checkpoint_individual_literals_emit_complete_public_stdout(self):
+        # A checkpoint is fixed semantics, not a testcase/path association.
+        # The trusted callback supplies truth-only V1 provenance; the reader
+        # deliberately does not infer a relationship from neighboring lines.
+        for marker, status in self.checkpoint_matrix():
+            with self.subTest(marker=marker):
+                self.assert_origin_run('error: XCTAssertEqual failed\n' + marker, (status,))
+
+    def test_checkpoint_exact_boundaries_and_unknown_values(self):
+        from scripts import private_build as helper
+        separators = ('\r', '\r\r', '\v', '\f', '\x1c', '\x1d', '\x1e',
+                      '\x85', '\u2028', '\u2029')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            for marker, status in self.checkpoint_matrix():
+                for ending in ('', '\n', '\r\n'):
+                    with self.subTest(marker=marker, ending=repr(ending)):
+                        diagnostic = 'error: XCTAssertEqual failed\n' + marker + ending
+                        log.write_bytes(diagnostic.encode('utf-8'))
+                        self.assertEqual(helper.app_tests_origin_statuses(log), (status,))
+                        self.assert_origin_run(diagnostic, (status,))
+                invalid = [
+                    ' ' + marker, '\t' + marker, marker + ' ', marker + '\t',
+                    marker + ' PRIVATE_SOURCE_CANARY', marker + 'suffix',
+                    '"' + marker + '"', "'" + marker + "'", '> ' + marker,
+                    'error: ' + marker, 'expected text: ' + marker,
+                    'PRIVATE_SOURCE_CANARY' + marker, marker + '\x00',
+                    marker.replace('checkpoint=', 'checkpoint=unknown-'),
+                    marker.replace('OPE12_CHECKPOINT_V1', 'OPE12_CHECKPOINT_V2'),
+                ]
+                for separator in separators:
+                    invalid.extend((separator + marker, marker + separator,
+                                    'PRIVATE_PREFIX' + separator + marker,
+                                    marker + separator + 'PRIVATE_SUFFIX',
+                                    'quoted:' + separator + marker + separator + 'end quote',
+                                    marker + separator + '\r\n'))
+                for specimen in invalid:
+                    with self.subTest(marker=marker, specimen=repr(specimen)):
+                        diagnostic = 'error: XCTAssertEqual failed\n' + specimen
+                        log.write_bytes(diagnostic.encode('utf-8'))
+                        self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                        self.assert_origin_run(diagnostic)
+
+    def test_checkpoint_requires_root_assertion_not_neighbor_origin(self):
+        from unittest.mock import patch
+        from scripts import private_build as helper
+        for marker, _ in self.checkpoint_matrix():
+            for diagnostic, category in (
+                ('', 'unknown'), ('** BUILD FAILED **', 'test-build'),
+                ('error: cannot find fixture in scope', 'compile'),
+                ('Test execution timed out', 'test-timeout'),
+            ):
+                with self.subTest(marker=marker, category=category):
+                    with patch.object(helper, 'app_tests_origin_statuses') as read:
+                        self.assert_origin_run(diagnostic + '\n' + marker, category=category)
+                    read.assert_not_called()
+
+    def test_checkpoint_read_is_bounded_strict_utf8_and_silent(self):
+        from unittest.mock import MagicMock
+        from scripts import private_build as helper
+        limit = 1024 * 1024
+        public, stderr = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                for marker, status in self.checkpoint_matrix():
+                    with self.subTest(marker=marker):
+                        prefix = (marker + '\n').encode('utf-8')
+                        log.write_bytes(prefix + b'x' * (limit - len(prefix)))
+                        self.assertEqual(helper.app_tests_origin_statuses(log), (status,))
+                        with log.open('ab') as output:
+                            output.write(b'x')
+                        self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                        log.write_bytes(prefix + b'\xff')
+                        self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                        for error in (OSError('PRIVATE_SOURCE_CANARY'), MemoryError('PRIVATE_SOURCE_CANARY')):
+                            with failing_log_reads(error):
+                                self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                        mocked = MagicMock()
+                        stream = mocked.open.return_value.__enter__.return_value
+                        stream.read.return_value = prefix
+                        self.assertEqual(helper.app_tests_origin_statuses(mocked), (status,))
+                        mocked.open.assert_called_once_with('rb')
+                        stream.read.assert_called_once_with(limit + 1)
+                        mocked.open.return_value.__exit__.side_effect = MemoryError('PRIVATE_SOURCE_CANARY')
+                        self.assertEqual(helper.app_tests_origin_statuses(mocked), ())
+                log.unlink()
+                self.assertEqual(helper.app_tests_origin_statuses(log), ())
+        self.assertEqual(public.getvalue(), '')
+        self.assertEqual(stderr.getvalue(), '')
+
+    def test_checkpoint_faults_preserve_original_exception_and_cleanup(self):
+        from unittest.mock import patch
+        from scripts import private_build as helper
+        for marker, status in self.checkpoint_matrix():
+            for fault in ('reader', 'unallowlisted'):
+                with self.subTest(marker=marker, fault=fault):
+                    self.assert_origin_run('error: XCTAssertEqual failed\n' + marker, fault=fault)
+            for fault in ('write', 'flush'):
+                with self.subTest(marker=marker, fault=fault):
+                    original_print = print
+
+                    def faulty_print(*args, **kwargs):
+                        if args and args[0] == status:
+                            if fault == 'flush':
+                                original_print(*args, **kwargs)
+                            raise OSError('PRIVATE_SOURCE_CANARY')
+                        return original_print(*args, **kwargs)
+
+                    with patch('builtins.print', side_effect=faulty_print):
+                        self.assert_origin_run('error: XCTAssertEqual failed\n' + marker,
+                                               (status,) if fault == 'flush' else ())
+
+    def test_checkpoint_reader_pressure_keeps_hard_ten_second_deadline(self):
+        import signal
+        from scripts import private_build as helper
+
+        class DeadlineExpired(BaseException):
+            pass
+
+        def expire(*_):
+            raise DeadlineExpired()
+
+        matrix = self.matrix() + self.checkpoint_matrix()
+        valid = '\n'.join(marker for marker, _ in reversed(matrix)) + '\n'
+        patterns = (valid, self.checkpoint_matrix()[0][0] + 'suffix\n', 'x', '\n')
+        limit = 1024 * 1024
+        previous = signal.signal(signal.SIGALRM, expire)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, 10)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / 'app-tests.log'
+                for pattern in patterns:
+                    with self.subTest(pattern_length=len(pattern)):
+                        prefix = 'error: XCTAssertEqual failed\n'
+                        diagnostic = prefix + pattern * ((limit - len(prefix)) // len(pattern))
+                        expected = tuple(status for _, status in matrix) if pattern == valid else ()
+                        log.write_bytes(diagnostic.encode('utf-8'))
+                        self.assertEqual(helper.app_tests_origin_statuses(log), expected)
+                        self.assert_origin_run(diagnostic, expected)
+        except DeadlineExpired:
+            self.fail('Checkpoint protocol stress exceeded 10 seconds')
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            signal.signal(signal.SIGALRM, previous)
 
     def test_origin_individual_literals_and_rejects_nonliteral_lines(self):
         from scripts import private_build as helper

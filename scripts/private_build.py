@@ -147,11 +147,24 @@ def classify_app_tests_failure(log, *, build_reason=False, type_inference_detail
 
 
 # Only these complete protocol lines and public statuses may cross the boundary.
+# Checkpoints describe fixed semantics, not testcase identities or source paths.
+# The trusted callback guarantees truth-only V1 emission; this reader does not
+# infer provenance from neighboring records. Publication requires root test-assertion.
 APP_TESTS_ORIGIN_STATUSES = {
-    f'OPE12_ORIGIN_V1 failure={failure} area={area}':
-        f'app-tests-origin-{failure}-area-{area}: failed'
-    for failure in ('truth', 'equality', 'wait-timeout', 'unwrap', 'other')
-    for area in ('bootstrap', 'onboarding', 'layout', 'navigation', 'image-check', 'other')
+    **{f'OPE12_ORIGIN_V1 failure={failure} area={area}':
+       f'app-tests-origin-{failure}-area-{area}: failed'
+       for failure in ('truth', 'equality', 'wait-timeout', 'unwrap', 'other')
+       for area in ('bootstrap', 'onboarding', 'layout', 'navigation', 'image-check', 'other')},
+    'OPE12_CHECKPOINT_V1 checkpoint=other': 'app-tests-checkpoint-other: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=element-existence': 'app-tests-checkpoint-element-existence: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=accessibility-hit': 'app-tests-checkpoint-accessibility-hit: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=selected-state': 'app-tests-checkpoint-selected-state: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=frame-containment': 'app-tests-checkpoint-frame-containment: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=scroll-reachability': 'app-tests-checkpoint-scroll-reachability: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=content-value': 'app-tests-checkpoint-content-value: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=async-progress': 'app-tests-checkpoint-async-progress: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=request-isolation': 'app-tests-checkpoint-request-isolation: failed',
+    'OPE12_CHECKPOINT_V1 checkpoint=scene-identity': 'app-tests-checkpoint-scene-identity: failed',
 }
 
 
