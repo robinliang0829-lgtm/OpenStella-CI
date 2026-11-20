@@ -146,6 +146,32 @@ def classify_app_tests_failure(log, *, build_reason=False, type_inference_detail
     return 'unknown'
 
 
+# Only these complete protocol lines and public statuses may cross the boundary.
+APP_TESTS_ORIGIN_STATUSES = {
+    f'OPE12_ORIGIN_V1 failure={failure} area={area}':
+        f'app-tests-origin-{failure}-area-{area}: failed'
+    for failure in ('truth', 'equality', 'wait-timeout', 'unwrap', 'other')
+    for area in ('bootstrap', 'onboarding', 'layout', 'navigation', 'image-check', 'other')
+}
+
+
+def app_tests_origin_statuses(log):
+    """Read bounded, exact protocol lines; never infer from diagnostic prose."""
+    try:
+        limit = 1024 * 1024
+        with log.open('rb') as output:
+            data = output.read(limit + 1)
+        if len(data) > limit:
+            return ()
+        # Only LF/CRLF delimit lines; preserve all other characters for exact matching.
+        found = {line for line in data.decode('utf-8').replace('\r\n', '\n').split('\n')
+                 if line in APP_TESTS_ORIGIN_STATUSES}
+        return tuple(status for line, status in APP_TESTS_ORIGIN_STATUSES.items()
+                     if line in found)
+    except Exception:
+        return ()
+
+
 def build_plan(profile):
     swift = [('swift-package-tests', ['swift', 'test', '--package-path', 'ios/Packages/OpenStellaKit'])]
     if profile == 'kit':
@@ -217,6 +243,9 @@ def run_profile(profile, source, logs):
                                       for kind in ('true', 'false', 'equal', 'unwrap', 'wait-timeout')
                                       for target in ('hosted-tests', 'ui-tests', 'unknown')}:
                             print(f'app-tests-{detail}: failed', flush=True)
+                        for status in app_tests_origin_statuses(logs / 'app-tests.log'):
+                            if status in APP_TESTS_ORIGIN_STATUSES.values():
+                                print(status, flush=True)
                     if category == 'test-build':
                         reason = classify_app_tests_failure(logs / 'app-tests.log', build_reason=True)
                         if reason.startswith('build-'):

@@ -1170,5 +1170,265 @@ class BuildTests(unittest.TestCase):
             process.terminate.assert_called_once()
 
 
+class OriginProtocolTests(unittest.TestCase):
+    maxDiff = None
+    failures = ('truth', 'equality', 'wait-timeout', 'unwrap', 'other')
+    areas = ('bootstrap', 'onboarding', 'layout', 'navigation', 'image-check', 'other')
+
+    def matrix(self):
+        return [(f'OPE12_ORIGIN_V1 failure={failure} area={area}',
+                 f'app-tests-origin-{failure}-area-{area}: failed')
+                for failure in self.failures for area in self.areas]
+
+    def assert_origin_run(self, diagnostic, statuses=(), *, category='test-assertion', fault=None):
+        from unittest.mock import MagicMock, patch
+        import json
+        from scripts import private_build as helper
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = helper.StageFailed('PRIVATE_SOURCE_CANARY sk-fake-key testCounterfeit')
+            process = MagicMock()
+            process.poll.return_value = None
+            process.wait.side_effect = [helper.subprocess.TimeoutExpired('fixture', 10), None]
+            devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [
+                {'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+
+            def stage(label, *args):
+                if label == 'app-tests':
+                    (root / 'logs/app-tests.log').write_text(diagnostic)
+                    print('app-tests: failed', flush=True)
+                    raise original
+
+            class Output(io.StringIO):
+                def write(self, text):
+                    if fault == 'write' and text.startswith('app-tests-origin-'):
+                        raise OSError('PRIVATE_SOURCE_CANARY')
+                    return super().write(text)
+
+                def flush(self):
+                    if fault == 'flush' and 'app-tests-origin-' in self.getvalue():
+                        raise MemoryError('PRIVATE_SOURCE_CANARY')
+                    return super().flush()
+
+            public, stderr = Output(), io.StringIO()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(helper, 'run_stage', side_effect=stage))
+                stack.enter_context(patch.object(helper.subprocess, 'check_output',
+                                                side_effect=['26.2', json.dumps(devices)]))
+                stack.enter_context(patch.object(helper.subprocess, 'Popen', return_value=process))
+                stack.enter_context(patch.object(helper.urllib.request, 'urlopen'))
+                if fault in ('reader', 'unallowlisted'):
+                    options = ({'side_effect': MemoryError('PRIVATE_SOURCE_CANARY')}
+                               if fault == 'reader' else {'return_value': ('PRIVATE_SOURCE_CANARY',)})
+                    stack.enter_context(patch.object(helper, 'app_tests_origin_statuses', **options))
+                with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(helper.StageFailed) as caught:
+                        helper.run_profile('ios', root, root / 'logs')
+            self.assertIs(caught.exception, original)
+            expected = f'app-tests: failed\napp-tests-{category}: failed\n'
+            expected += ''.join(status + '\n' for status in statuses)
+            self.assertEqual(public.getvalue(), expected)
+            self.assertEqual(stderr.getvalue(), '')
+            process.terminate.assert_called_once_with()
+            process.kill.assert_called_once_with()
+            self.assertEqual(process.wait.call_args_list,
+                             [unittest.mock.call(timeout=10), unittest.mock.call()])
+
+    def test_origin_matrix_is_supplemental_deduplicated_and_fixed_order(self):
+        matrix = self.matrix()
+        self.assertEqual(len(matrix), 30)
+        diagnostic = ('error: XCTAssertEqual failed\nPRIVATE_SOURCE_CANARY sk-fake-key\n'
+                      + '\r\n'.join(marker for marker, _ in reversed(matrix)) + '\r\n'
+                      + '\n'.join(marker for marker, _ in matrix))
+        self.assert_origin_run(diagnostic, [status for _, status in matrix])
+
+    def test_origin_individual_literals_and_rejects_nonliteral_lines(self):
+        from scripts import private_build as helper
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            for marker, status in self.matrix():
+                with self.subTest(marker=marker):
+                    log.write_text(marker)
+                    self.assertEqual(helper.app_tests_origin_statuses(log), (status,))
+                    invalid = [
+                        ' ' + marker, '\t' + marker, marker + ' ', marker + '\t',
+                        marker + ' PRIVATE_SOURCE_CANARY', marker + 'suffix',
+                        '"' + marker + '"', "'" + marker + "'", '> ' + marker,
+                        'error: ' + marker, 'expected text: ' + marker,
+                        'PRIVATE_SOURCE_CANARY' + marker, marker + '\x00',
+                        marker.replace(' area=', '\narea='),
+                        marker.replace('failure=', 'failure=unknown-'),
+                        marker.replace('area=', 'area=unknown-'),
+                        marker.replace('OPE12_ORIGIN_V1', 'OPE12_ORIGIN_V2'),
+                    ]
+                    log.write_text('\n'.join(invalid))
+                    self.assertEqual(helper.app_tests_origin_statuses(log), ())
+            self.assert_origin_run('error: XCTAssertEqual failed\n' + '\n'.join(invalid))
+
+    def test_origin_only_lf_and_crlf_delimit_exact_protocol_lines(self):
+        from scripts import private_build as helper
+        separators = ('\r', '\r\r', '\v', '\f', '\x1c', '\x1d', '\x1e',
+                      '\x85', '\u2028', '\u2029')
+        marker, _ = self.matrix()[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            for separator in separators:
+                specimens = (
+                    separator + marker,
+                    marker + separator,
+                    'PRIVATE_PREFIX' + separator + marker,
+                    marker + separator + 'PRIVATE_SUFFIX',
+                    'quoted text:' + separator + marker + separator + 'end quote',
+                    marker + separator + '\r\n',
+                )
+                for specimen in specimens:
+                    diagnostic = 'error: XCTAssertEqual failed\n' + specimen
+                    for boundary in ('reader', 'public-run'):
+                        with self.subTest(separator=repr(separator), specimen=repr(specimen),
+                                          boundary=boundary):
+                            if boundary == 'reader':
+                                log.write_bytes(diagnostic.encode('utf-8'))
+                                self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                            else:
+                                self.assert_origin_run(diagnostic)
+
+    def test_origin_lf_crlf_and_unterminated_lines_keep_existing_contract(self):
+        from scripts import private_build as helper
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            for marker, status in self.matrix():
+                for ending in ('', '\n', '\r\n'):
+                    with self.subTest(marker=marker, ending=repr(ending)):
+                        diagnostic = 'error: XCTAssertEqual failed\n' + marker + ending
+                        log.write_bytes(diagnostic.encode('utf-8'))
+                        self.assertEqual(helper.app_tests_origin_statuses(log), (status,))
+                        self.assert_origin_run(diagnostic, (status,))
+            matrix = self.matrix()
+            diagnostic = ('error: XCTAssertEqual failed\r\n'
+                          + '\n'.join(marker for marker, _ in matrix[:15]) + '\r\n'
+                          + '\r\n'.join(marker for marker, _ in matrix[15:]))
+            expected = tuple(status for _, status in matrix)
+            log.write_bytes(diagnostic.encode('utf-8'))
+            self.assertEqual(helper.app_tests_origin_statuses(log), expected)
+            self.assert_origin_run(diagnostic, expected)
+
+    def test_origin_read_is_bounded_silent_and_fails_closed(self):
+        from unittest.mock import MagicMock
+        from scripts import private_build as helper
+        limit = 1024 * 1024
+        marker, status = self.matrix()[0]
+        prefix = (marker + '\n').encode()
+        public, stderr = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            with contextlib.redirect_stdout(public), contextlib.redirect_stderr(stderr):
+                self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                log.write_bytes(prefix + b'x' * (limit - len(prefix)))
+                self.assertEqual(helper.app_tests_origin_statuses(log), (status,))
+                with log.open('ab') as output:
+                    output.write(b'x')
+                self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                log.write_bytes(prefix + b'\xff')
+                self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                for error in (OSError('PRIVATE_SOURCE_CANARY'), MemoryError('PRIVATE_SOURCE_CANARY')):
+                    with failing_log_reads(error):
+                        self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                mocked = MagicMock()
+                stream = mocked.open.return_value.__enter__.return_value
+                stream.read.return_value = prefix
+                self.assertEqual(helper.app_tests_origin_statuses(mocked), (status,))
+                mocked.open.assert_called_once_with('rb')
+                stream.read.assert_called_once_with(limit + 1)
+                mocked.open.return_value.__exit__.side_effect = MemoryError('PRIVATE_SOURCE_CANARY')
+                self.assertEqual(helper.app_tests_origin_statuses(mocked), ())
+        self.assertEqual(public.getvalue(), '')
+        self.assertEqual(stderr.getvalue(), '')
+
+    def test_origin_faults_preserve_original_exception_and_cleanup(self):
+        marker, status = self.matrix()[0]
+        for fault in ('reader', 'unallowlisted', 'write', 'flush'):
+            with self.subTest(fault=fault):
+                self.assert_origin_run('error: XCTAssertEqual failed\n' + marker,
+                                       (status,) if fault == 'flush' else (), fault=fault)
+
+    def test_origin_reader_is_only_called_for_test_assertion_category(self):
+        from unittest.mock import patch
+        from scripts import private_build as helper
+        marker, _ = self.matrix()[0]
+        for diagnostic, category in (
+            ('', 'unknown'), ('** BUILD FAILED **', 'test-build'),
+            ('error: cannot find fixture in scope', 'compile'),
+            ('Test execution timed out', 'test-timeout'),
+        ):
+            with self.subTest(category=category):
+                with patch.object(helper, 'app_tests_origin_statuses') as read:
+                    self.assert_origin_run(diagnostic + '\n' + marker, category=category)
+                read.assert_not_called()
+
+    def test_origin_reader_is_absent_on_success_and_other_stage_failures(self):
+        from unittest.mock import MagicMock, patch
+        import json
+        from scripts import private_build as helper
+        for failure in (None, 'swift-package-tests', 'ui-api-readiness', 'non-stage-app-error'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                process = MagicMock()
+                process.poll.return_value = 1 if failure == 'ui-api-readiness' else None
+                devices = {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-1': [
+                    {'name': 'iPhone fixture', 'udid': 'fixture-udid'}]}}
+
+                def stage(label, *args):
+                    if label == failure:
+                        raise helper.StageFailed('PRIVATE_SOURCE_CANARY')
+                    if label == 'app-tests' and failure == 'non-stage-app-error':
+                        raise OSError('PRIVATE_SOURCE_CANARY')
+
+                with patch.object(helper, 'run_stage', side_effect=stage), \
+                        patch.object(helper.subprocess, 'check_output', side_effect=['26.2', json.dumps(devices)]), \
+                        patch.object(helper.subprocess, 'Popen', return_value=process), \
+                        patch.object(helper.urllib.request, 'urlopen'), \
+                        patch.object(helper, 'app_tests_origin_statuses') as read:
+                    if failure is None:
+                        helper.run_profile('ios', root, root / 'logs')
+                    else:
+                        error = OSError if failure == 'non-stage-app-error' else helper.StageFailed
+                        with self.assertRaises(error):
+                            helper.run_profile('ios', root, root / 'logs')
+                read.assert_not_called()
+
+    def test_origin_pressure_has_hard_deadline_without_new_subprocesses(self):
+        import signal
+        from scripts import private_build as helper
+
+        class DeadlineExpired(BaseException):
+            pass
+
+        def expire(*_):
+            raise DeadlineExpired()
+
+        limit = 1024 * 1024
+        matrix = self.matrix()
+        valid = '\n'.join(marker for marker, _ in reversed(matrix)) + '\n'
+        patterns = (valid, matrix[0][0] + 'suffix\n', 'x', '\n')
+        previous = signal.signal(signal.SIGALRM, expire)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, 10)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / 'app-tests.log'
+                for pattern in patterns:
+                    with self.subTest(pattern_length=len(pattern)):
+                        prefix = 'error: XCTAssertEqual failed\n'
+                        diagnostic = prefix + pattern * ((limit - len(prefix)) // len(pattern))
+                        expected = tuple(status for _, status in matrix) if pattern == valid else ()
+                        log.write_text(diagnostic)
+                        self.assertEqual(helper.app_tests_origin_statuses(log), expected)
+                        self.assert_origin_run(diagnostic, expected)
+        except DeadlineExpired:
+            self.fail('Origin protocol stress exceeded 10 seconds')
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            signal.signal(signal.SIGALRM, previous)
+
+
 if __name__ == '__main__':
     unittest.main()
