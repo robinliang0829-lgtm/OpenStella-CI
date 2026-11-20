@@ -1240,11 +1240,53 @@ class OriginProtocolTests(unittest.TestCase):
                 for checkpoint in ('other', 'element-existence', 'accessibility-hit',
                                    'selected-state', 'frame-containment', 'scroll-reachability',
                                    'content-value', 'async-progress', 'request-isolation',
-                                   'scene-identity')]
+                                   'scene-identity',
+                                   'guide-entry-hit', 'home-heading-hit', 'home-ready-wait',
+                                   'home-tab-hit', 'host-ack-wait', 'inbound-return-hit',
+                                   'inbound-return-wait', 'input-reflection-wait', 'item-slot-hit',
+                                   'mailbox-hit', 'modal-close-hit', 'modal-dismiss-wait',
+                                   'modal-ready-wait', 'onboarding-submit-hit', 'post-dismiss-tab-hit',
+                                   'resident-chat-hit', 'scene-action-hit', 'scene-render-wait')]
+
+    def test_checkpoint_role_literals_emit_complete_public_stdout(self):
+        matrix = self.checkpoint_matrix()[10:]
+        self.assertEqual(len(matrix), 18)
+        for marker, status in matrix:
+            with self.subTest(marker=marker):
+                self.assert_origin_run('error: XCTAssertEqual failed\n' + marker, (status,))
+
+    def test_checkpoint_role_allowlist_is_complete_unique_and_fixed_order(self):
+        from scripts import private_build as helper
+        matrix = self.matrix() + self.checkpoint_matrix()
+        self.assertEqual(len(matrix), 58)
+        self.assertEqual(len({marker for marker, _ in matrix}), 58)
+        self.assertEqual(len({status for _, status in matrix}), 58)
+        self.assertEqual(list(helper.APP_TESTS_ORIGIN_STATUSES.items()), matrix)
+        diagnostic = ('error: XCTAssertEqual failed\n'
+                      + '\r\n'.join(marker for marker, _ in reversed(matrix)) + '\r\n'
+                      + '\n'.join(marker for marker, _ in matrix))
+        self.assert_origin_run(diagnostic, [status for _, status in matrix])
+
+    def test_checkpoint_role_quoted_suffix_whitespace_and_non_lf_boundaries_rejected(self):
+        from scripts import private_build as helper
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'app-tests.log'
+            for marker, _ in self.checkpoint_matrix()[10:]:
+                invalid = ['"' + marker + '"', "'" + marker + "'", marker + 'suffix']
+                for separator in (' ', '\t', '\v', '\f', '\r', '\r\r', '\x85',
+                                  '\u00a0', '\u2028', '\u2029'):
+                    invalid.extend((separator + marker, marker + separator,
+                                    'quoted:' + separator + marker + separator + 'end quote'))
+                for specimen in invalid:
+                    with self.subTest(marker=marker, specimen=repr(specimen)):
+                        diagnostic = 'error: XCTAssertEqual failed\n' + specimen
+                        log.write_bytes(diagnostic.encode('utf-8'))
+                        self.assertEqual(helper.app_tests_origin_statuses(log), ())
+                        self.assert_origin_run(diagnostic)
 
     def test_origin_matrix_is_supplemental_deduplicated_and_fixed_order(self):
         matrix = self.matrix() + self.checkpoint_matrix()
-        self.assertEqual(len(matrix), 40)
+        self.assertEqual(len(matrix), 58)
         diagnostic = ('error: XCTAssertEqual failed\nPRIVATE_SOURCE_CANARY sk-fake-key\n'
                       + '\r\n'.join(marker for marker, _ in reversed(matrix)) + '\r\n'
                       + '\n'.join(marker for marker, _ in matrix))
