@@ -99,8 +99,8 @@ a separate parameter set — the OpenStella pipeline above is untouched.
 
 - Event: `openastra-world-core-ci`; payload is exactly `{sha, target}` with
   `target ∈ {all, node}`; `sha` must be a full lowercase 40-hex commit inside a reviewed
-  ref of the source repo: `refs/heads/main` or `refs/heads/integ/wc` (the integration
-  branch under review; drop it from `TRUSTED_REFS` after the work lands on `main`).
+  ref of the source repo: `refs/heads/main` (the integration branch was retired from
+  `TRUSTED_REFS` after PR #1 merged).
 - Release path: a published release **in this repository** tagged `wc-ci-<full-sha>`
   selects `target=all`. A release in the private repository does not dispatch anything.
 - Builds run `npm ci` and then the repository's own gate: typecheck, four layer suites,

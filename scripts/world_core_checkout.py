@@ -10,9 +10,9 @@ import tempfile
 # Never populate this set from a request, environment, or private source checkout.
 APPROVED_FEATURE_SHAS = frozenset()
 SOURCE_URL = 'git@github.com:robinliang0829-lgtm/openastra-world-core.git'
-# Reviewed refs of the private source repository. `integ/wc` is the integration
-# branch under review (PR #1); remove it here once the work lands on `main`.
-TRUSTED_REFS = ('refs/heads/main', 'refs/heads/integ/wc')
+# Reviewed refs of the private source repository. The integration branch was removed
+# after PR #1 merged into `main`; only the mainline is trusted now.
+TRUSTED_REFS = ('refs/heads/main',)
 HOST_KEY = 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n'
 
 

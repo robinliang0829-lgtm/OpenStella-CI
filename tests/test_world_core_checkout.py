@@ -49,22 +49,18 @@ class WorldCoreCheckoutTests(unittest.TestCase):
 
     def test_trusted_refs_are_reviewed_and_approvals_default_to_empty(self):
         self.assertEqual(getattr(self.helper, 'APPROVED_FEATURE_SHAS', None), frozenset())
-        self.assertEqual(
-            tuple(getattr(self.helper, 'TRUSTED_REFS', ())),
-            ('refs/heads/main', 'refs/heads/integ/wc'),
-        )
+        self.assertEqual(tuple(getattr(self.helper, 'TRUSTED_REFS', ())), ('refs/heads/main',))
         self.assertTrue(self.helper.SOURCE_URL.endswith('openastra-world-core.git'))
         self.assertNotIn('OpenStella.git', self.helper.SOURCE_URL)
 
     def test_checks_out_only_commits_inside_a_trusted_ref(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            origin, _git, commits = make_origin(root, trusted_refs=('main', 'integ/wc'))
+            origin, _git, commits = make_origin(root, trusted_refs=('main',))
             stdout, stderr = io.StringIO(), io.StringIO()
             with patch.object(self.helper, 'SOURCE_URL', str(origin)), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 self.helper.checkout(commits['main'], 'FIXTURE_KEY_NOT_A_REAL_CREDENTIAL', root / 'main-ok')
                 self.assertEqual((root / 'main-ok/data').read_text(), 'PRIVATE_SOURCE_CANARY')
-                self.helper.checkout(commits['integ/wc'], 'FIXTURE_KEY_NOT_A_REAL_CREDENTIAL', root / 'integ-ok')
                 with self.assertRaises(ValueError):
                     self.helper.checkout(commits['untrusted'], 'FIXTURE_KEY_NOT_A_REAL_CREDENTIAL', root / 'denied')
                 with self.assertRaises(ValueError):
