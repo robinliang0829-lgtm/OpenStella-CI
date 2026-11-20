@@ -8,7 +8,7 @@ import tempfile
 
 # Only maintainers reviewing this trusted CI configuration may approve snapshots.
 # Never populate this set from a request, environment, or private source checkout.
-APPROVED_FEATURE_SHAS = frozenset({'a0c0d6189b5b58e7f0316aa4304a080106871174'})
+APPROVED_FEATURE_SHAS = frozenset({'213ddef84453b085e67aee3ccf5f5308dbee3c65'})
 SOURCE_URL = 'git@github.com:robinliang0829-lgtm/OpenStella.git'
 HOST_KEY = 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n'
 
