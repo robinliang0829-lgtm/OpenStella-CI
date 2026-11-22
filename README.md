@@ -98,14 +98,17 @@ deploy key (`WORLD_CORE_SOURCE_READ_SSH_KEY`, scoped to `openastra-world-core` o
 a separate parameter set — the OpenStella pipeline above is untouched.
 
 - Event: `openastra-world-core-ci`; payload is exactly `{sha, target}` with
-  `target ∈ {all, node}`; `sha` must be a full lowercase 40-hex commit inside a reviewed
-  ref of the source repo: `refs/heads/main` (the integration branch was retired from
-  `TRUSTED_REFS` after PR #1 merged).
+  `target ∈ {all, node, ope78}`; `sha` must be a full lowercase 40-hex commit inside
+  `refs/heads/main` or in the reviewed `APPROVED_FEATURE_SHAS` set in
+  `scripts/world_core_checkout.py`. A changed feature commit requires fresh review.
 - Release path: a published release **in this repository** tagged `wc-ci-<full-sha>`
   selects `target=all`. A release in the private repository does not dispatch anything.
 - Builds run `npm ci` and then the repository's own gate: typecheck, four layer suites,
   contract conformance, migration + bundle freshness, e2e drill, cross-runtime parity,
   asset hashes, and the release gate (which packs and re-imports the tarball).
+- The `ope78` profile checks the isolated pilot contract, Resident authority tests,
+  locked Rust build and shadow/recovery assertions. Engine binaries and visual evidence
+  are covered by the private local acceptance receipt.
 - Same privacy contract as above: public output is stage pass/fail only; stdout/stderr
   stay in runner-local private files; the source, logs and `dist/` are deleted afterwards;
   no artifacts, caches or releases are uploaded. Godot is not installed on the runner, so

@@ -36,10 +36,27 @@ def build_plan(profile):
     ]
     if profile in ('all', 'node'):
         return node
+    if profile == 'ope78':
+        cargo = ['cargo', '+1.98.0']
+        project = ['--manifest-path', 'rust-shadow/Cargo.toml']
+        return [
+            ('pilot-offline-cache', ['python3', '-B', 'contract/prepare-npm-cache.py', '.ope78-npm-cache']),
+            ('pilot-install', ['npm', 'ci', '--prefix', 'contract', '--offline', '--include=dev',
+                               '--ignore-scripts', '--no-audit', '--no-fund', '--cache', '.ope78-npm-cache']),
+            ('pilot-contract', ['node', 'contract/verify-contract.mjs']),
+            ('pilot-authority-contract', ['node', 'contract/verify-contract.mjs', '--authority']),
+            ('pilot-resident', ['node', '--test', 'resident/pilot.test.ts']),
+            ('pilot-rust-toolchain', ['rustup', 'toolchain', 'install', '1.98.0', '--profile', 'minimal']),
+            ('pilot-rust-tests', [*cargo, 'test', *project, '--workspace', '--locked']),
+            ('pilot-rust-release', [*cargo, 'build', *project, '--release', '--locked']),
+            ('pilot-shadow-parity', ['node', 'qa/check-authority.mjs', '--shadow']),
+        ]
     raise ValueError('Unknown build profile')
 
 
 def run_profile(profile, source, logs):
+    if profile == 'ope78':
+        source = source / 'pilots' / 'ope78'
     logs.mkdir(mode=0o700, parents=True, exist_ok=True)
     for label, args in build_plan(profile):
         run_stage(label, args, source, logs)

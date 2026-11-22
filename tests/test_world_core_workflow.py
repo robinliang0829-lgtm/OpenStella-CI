@@ -31,8 +31,9 @@ class WorldCoreWorkflowTests(unittest.TestCase):
             'persist-credentials: false',
             'package-manager-cache: false',
             'world_core_checkout.py',
-            'world_core_build.py node',
-            "node-version: '24'",
+            'world_core_build.py "$WORLD_CORE_PROFILE"',
+            "needs.request.outputs.target == 'ope78'",
+            "'26.13.0' || '24'",
         ]:
             self.assertIn(required, self.text)
         for forbidden in ['upload-artifact', 'actions/cache', 'pull_request_target', 'gh release upload', 'set -x', 'github.event.client_payload']:
@@ -44,6 +45,15 @@ class WorldCoreWorkflowTests(unittest.TestCase):
 
 
 class WorldCoreBuildTests(unittest.TestCase):
+    def test_pilot_runs_fixed_contract_resident_and_rust_stages(self):
+        module = importlib.import_module('scripts.world_core_build')
+        stages = dict(module.build_plan('ope78'))
+        self.assertEqual(stages['pilot-authority-contract'], ['node', 'contract/verify-contract.mjs', '--authority'])
+        self.assertEqual(stages['pilot-resident'], ['node', '--test', 'resident/pilot.test.ts'])
+        self.assertIn('--locked', stages['pilot-rust-tests'])
+        self.assertIn('--locked', stages['pilot-rust-release'])
+        self.assertEqual(stages['pilot-shadow-parity'], ['node', 'qa/check-authority.mjs', '--shadow'])
+
     def test_build_plan_is_fixed_and_never_reads_request_data(self):
         module = importlib.import_module('scripts.world_core_build')
         node = module.build_plan('node')

@@ -18,7 +18,7 @@ on:
       target:
         description: Validation profile
         type: choice
-        options: [all, node]
+        options: [all, node, ope78]
         default: all
         required: true
 permissions:
@@ -51,7 +51,10 @@ jobs:
   node:
     name: Contract, services, SDK, adapters, presentation
     needs: request
-    if: needs.request.outputs.target == 'all' || needs.request.outputs.target == 'node'
+    if: >-
+      needs.request.outputs.target == 'all' ||
+      needs.request.outputs.target == 'node' ||
+      needs.request.outputs.target == 'ope78'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -64,7 +67,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '24'
+          node-version: ${{ needs.request.outputs.target == 'ope78' && '26.13.0' || '24' }}
           package-manager-cache: false
       - name: Fetch trusted source without retaining the read key
         env:
@@ -72,7 +75,9 @@ jobs:
           WORLD_CORE_SOURCE_READ_SSH_KEY: ${{ secrets.WORLD_CORE_SOURCE_READ_SSH_KEY }}
         run: python3 scripts/world_core_checkout.py
       - name: Validate source with private tool output
-        run: python3 scripts/world_core_build.py node
+        env:
+          WORLD_CORE_PROFILE: ${{ needs.request.outputs.target }}
+        run: python3 scripts/world_core_build.py "$WORLD_CORE_PROFILE"
       - name: Remove private source and raw reports
         if: always()
         run: |
