@@ -32,7 +32,10 @@ class WorldCoreWorkflowTests(unittest.TestCase):
             'package-manager-cache: false',
             'world_core_checkout.py',
             'world_core_build.py "$WORLD_CORE_PROFILE"',
+            "options: [all, node, ope78, ope110]",
             "needs.request.outputs.target == 'ope78'",
+            "needs.request.outputs.target == 'ope110'",
+            'OPE110_EVIDENCE_DIR: ${{ runner.temp }}/world-core-output/authority-evidence',
             "'26.13.0' || '24'",
         ]:
             self.assertIn(required, self.text)
@@ -53,6 +56,19 @@ class WorldCoreBuildTests(unittest.TestCase):
         self.assertIn('--locked', stages['pilot-rust-tests'])
         self.assertIn('--locked', stages['pilot-rust-release'])
         self.assertEqual(stages['pilot-shadow-parity'], ['node', 'qa/check-authority.mjs', '--shadow'])
+
+    def test_authority_runs_node_gates_locked_rust_and_live_http(self):
+        module = importlib.import_module('scripts.world_core_build')
+        node = module.build_plan('node')
+        authority = module.build_plan('ope110')
+        self.assertEqual(authority[:len(node)], node)
+        project = ['--manifest-path', 'rust/Cargo.toml', '--locked']
+        self.assertEqual(authority[len(node):], [
+            ('authority-rust-toolchain', ['rustup', 'toolchain', 'install', '1.98.0', '--profile', 'minimal']),
+            ('authority-rust-tests', ['cargo', '+1.98.0', 'test', *project, '--workspace']),
+            ('authority-rust-build', ['cargo', '+1.98.0', 'build', *project]),
+            ('authority-http', ['node', '--test', 'tests/authority/world-authority.test.mjs']),
+        ])
 
     def test_build_plan_is_fixed_and_never_reads_request_data(self):
         module = importlib.import_module('scripts.world_core_build')

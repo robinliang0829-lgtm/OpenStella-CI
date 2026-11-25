@@ -23,9 +23,11 @@ class WorldCoreRequestTests(unittest.TestCase):
             {'sha': self.sha, 'target': 'node'},
         )
 
-    def test_accepts_fixed_pilot_profile_from_owner(self):
-        request = {'sha': self.sha, 'target': 'ope78'}
-        self.assertEqual(self.validate('repository_dispatch', self.dispatch(request), 'owner', 'owner'), request)
+    def test_accepts_fixed_pilot_and_authority_profiles_from_owner(self):
+        for target in ('ope78', 'ope110'):
+            with self.subTest(target=target):
+                request = {'sha': self.sha, 'target': target}
+                self.assertEqual(self.validate('repository_dispatch', self.dispatch(request), 'owner', 'owner'), request)
 
     def test_rejects_untrusted_or_malformed_dispatch_without_echoing_it(self):
         valid = {'sha': self.sha, 'target': 'all'}

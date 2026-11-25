@@ -18,7 +18,7 @@ on:
       target:
         description: Validation profile
         type: choice
-        options: [all, node, ope78]
+        options: [all, node, ope78, ope110]
         default: all
         required: true
 permissions:
@@ -54,7 +54,8 @@ jobs:
     if: >-
       needs.request.outputs.target == 'all' ||
       needs.request.outputs.target == 'node' ||
-      needs.request.outputs.target == 'ope78'
+      needs.request.outputs.target == 'ope78' ||
+      needs.request.outputs.target == 'ope110'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -67,7 +68,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: ${{ needs.request.outputs.target == 'ope78' && '26.13.0' || '24' }}
+          node-version: ${{ (needs.request.outputs.target == 'ope78' || needs.request.outputs.target == 'ope110') && '26.13.0' || '24' }}
           package-manager-cache: false
       - name: Fetch trusted source without retaining the read key
         env:
@@ -77,6 +78,7 @@ jobs:
       - name: Validate source with private tool output
         env:
           WORLD_CORE_PROFILE: ${{ needs.request.outputs.target }}
+          OPE110_EVIDENCE_DIR: ${{ runner.temp }}/world-core-output/authority-evidence
         run: python3 scripts/world_core_build.py "$WORLD_CORE_PROFILE"
       - name: Remove private source and raw reports
         if: always()
