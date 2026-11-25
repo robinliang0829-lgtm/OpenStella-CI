@@ -1,6 +1,6 @@
 # OpenStella-CI
 
-Public CI orchestration for the private OpenStella application. This repository contains infrastructure only, not the application's source code.
+Public CI orchestration for OpenStella and the private OpenAstra projects listed below. This repository contains CI infrastructure.
 
 ## Current rollout status
 
@@ -22,7 +22,7 @@ Do not treat the probe as an application build or a passing OpenStella CI result
 
 A public repository is not a guaranteed remedy for an account billing lock: GitHub documents that a failed payment authorization can also block free-tier Actions access. If the credential-free probe is rejected before execution, stop credential provisioning and resolve the account lock with GitHub.
 
-GitHub's terms require hosted-runner work to relate to production, testing, deployment, or publication of the software project associated with the Actions repository. This repository is dedicated solely to OpenStella's own CI. No claim is made that GitHub has specifically approved a public-CI/private-source billing arrangement; confirm with GitHub Support before relying on it long-term. Larger runners are not part of this standard-runner probe.
+GitHub's terms require hosted-runner work to relate to production, testing, deployment, or publication of the software project associated with the Actions repository. This repository is dedicated to CI for the projects documented here. No claim is made that GitHub has specifically approved a public-CI/private-source billing arrangement; confirm with GitHub Support before relying on it long-term. Larger runners are not part of this standard-runner probe.
 
 References:
 - https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features
@@ -121,4 +121,22 @@ a separate parameter set — the OpenStella pipeline above is untouched.
 gh api --method POST repos/robinliang0829-lgtm/OpenStella-CI/dispatches --input - <<JSON
 {"event_type":"openastra-world-core-ci","client_payload":{"sha":"<40-hex>","target":"all"}}
 JSON
+```
+
+## OpenAstra Resident pipeline
+
+The owner can manually validate an exact reviewed private Resident commit.
+The workflow uses a separate read-only deploy key for this application
+(`RESIDENT_SOURCE_READ_SSH_KEY`) and pins checkout to the approved SHA. A new
+source SHA requires an explicit update to `scripts/resident_ci.py` and its
+approval test. The build runs on Ubuntu with Node 22 and disposable PostgreSQL
+16. It checks the CLI, the application's full test gate and the workbench
+lease, as well as positive fixture and negative reference-evidence acceptance.
+The public log contains stage results. Source, cache and reports are removed
+after the run.
+
+```sh
+SHA='<approved-full-sha>'
+gh workflow run resident-ci.yml --repo robinliang0829-lgtm/OpenStella-CI \
+  --ref main -f "sha=$SHA"
 ```

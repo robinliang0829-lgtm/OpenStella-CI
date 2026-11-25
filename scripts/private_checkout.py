@@ -13,7 +13,10 @@ SOURCE_URL = 'git@github.com:robinliang0829-lgtm/OpenStella.git'
 HOST_KEY = 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n'
 
 
-def checkout(sha, key_material, destination):
+def checkout(sha, key_material, destination, *, source_url=None, approved_feature_shas=None,
+             key_env='SOURCE_READ_SSH_KEY'):
+    source_url = SOURCE_URL if source_url is None else source_url
+    approved_feature_shas = APPROVED_FEATURE_SHAS if approved_feature_shas is None else approved_feature_shas
     if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError('Invalid commit SHA')
     if not key_material or destination.exists():
@@ -22,12 +25,12 @@ def checkout(sha, key_material, destination):
     with tempfile.TemporaryDirectory(prefix='.source-key-', dir=destination.parent) as temporary:
         key = Path(temporary) / 'key'
         # OpenSSH requires a final LF; gh secret set trims CR/LF from stdin.
-        key.write_text(key_material if key_material.endswith("\n") else key_material + "\n")
+        key.write_bytes((key_material.replace('\r\n', '\n').rstrip('\n') + '\n').encode('utf-8'))
         key.chmod(0o600)
         hosts = Path(temporary) / 'known_hosts'
         hosts.write_text(HOST_KEY)
         env = dict(os.environ)
-        env.pop('SOURCE_READ_SSH_KEY', None)
+        env.pop(key_env, None)
         env['GIT_TERMINAL_PROMPT'] = '0'
         env['GIT_SSH_COMMAND'] = f'ssh -F /dev/null -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile={shlex.quote(str(hosts))}'
         def git(*args, required=True):
@@ -37,8 +40,8 @@ def checkout(sha, key_material, destination):
             return result
         git('init', '--quiet')
         git('config', '--local', 'core.hooksPath', '/dev/null')
-        git('remote', 'add', 'origin', SOURCE_URL)
-        if sha in APPROVED_FEATURE_SHAS:
+        git('remote', 'add', 'origin', source_url)
+        if sha in approved_feature_shas:
             git('fetch', '--quiet', '--filter=blob:none', '--no-tags', 'origin', sha)
         else:
             git('fetch', '--quiet', '--filter=blob:none', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main')

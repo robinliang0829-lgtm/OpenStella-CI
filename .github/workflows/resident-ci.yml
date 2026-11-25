@@ -1,0 +1,84 @@
+name: OpenAstra Resident CI
+run-name: Resident private source validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full approved Resident source commit SHA
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    name: Validate non-sensitive request
+    if: >-
+      github.repository == 'robinliang0829-lgtm/OpenStella-CI' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      ci_sha: ${{ steps.request.outputs.ci_sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Verify CI infrastructure contracts
+        run: python3 -m unittest discover -s tests
+      - name: Validate source approval and CI revision
+        id: request
+        run: python3 -m scripts.resident_ci request
+
+  resident:
+    name: Resident and CLI (Ubuntu, Node 22)
+    needs: request
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: resident
+          POSTGRES_PASSWORD: ci_ephemeral_only
+          POSTGRES_DB: resident_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U resident"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.request.outputs.ci_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Fetch approved source with project-scoped read access
+        env:
+          REQUESTED_SHA: ${{ needs.request.outputs.sha }}
+          RESIDENT_SOURCE_READ_SSH_KEY: ${{ secrets.RESIDENT_SOURCE_READ_SSH_KEY }}
+        run: python3 -m scripts.resident_ci checkout
+      - name: Build and test with private output
+        env:
+          DATABASE_URL: postgresql://resident:ci_ephemeral_only@127.0.0.1:5432/resident_test
+        run: python3 -m scripts.resident_ci build
+      - name: Remove private source, cache and reports
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          for name in ('resident-source', 'resident-output'):
+              path = pathlib.Path(os.environ['RUNNER_TEMP']) / name
+              if path.exists():
+                  shutil.rmtree(path)
+          PY
