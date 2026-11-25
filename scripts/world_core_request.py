@@ -4,7 +4,7 @@ import subprocess
 
 EVENT_TYPE = 'openastra-world-core-ci'
 RELEASE_PREFIX = 'wc-ci-'
-TARGETS = frozenset({'all', 'node', 'ope78'})
+TARGETS = frozenset({'all', 'node', 'ope78', 'ope110'})
 
 
 def trusted_ci_sha(workflow_sha, workspace):

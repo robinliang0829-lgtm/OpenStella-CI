@@ -51,6 +51,16 @@ def build_plan(profile):
             ('pilot-rust-release', [*cargo, 'build', *project, '--release', '--locked']),
             ('pilot-shadow-parity', ['node', 'qa/check-authority.mjs', '--shadow']),
         ]
+    if profile == 'ope110':
+        cargo = ['cargo', '+1.98.0']
+        project = ['--manifest-path', 'rust/Cargo.toml', '--locked']
+        return [
+            *node,
+            ('authority-rust-toolchain', ['rustup', 'toolchain', 'install', '1.98.0', '--profile', 'minimal']),
+            ('authority-rust-tests', [*cargo, 'test', *project, '--workspace']),
+            ('authority-rust-build', [*cargo, 'build', *project]),
+            ('authority-http', ['node', '--test', 'tests/authority/world-authority.test.mjs']),
+        ]
     raise ValueError('Unknown build profile')
 
 

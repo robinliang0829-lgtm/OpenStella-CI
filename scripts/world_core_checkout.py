@@ -8,7 +8,10 @@ import tempfile
 
 # Only maintainers reviewing this trusted CI configuration may approve snapshots.
 # Never populate this set from a request, environment, or private source checkout.
-APPROVED_FEATURE_SHAS = frozenset({'d6b47c6c557da3e57e5175ad2523bca698b61122'})
+APPROVED_FEATURE_SHAS = frozenset({
+    'd6b47c6c557da3e57e5175ad2523bca698b61122',
+    '7b03cecd6d1702ec34d8ba328285ed2b1a21d5cc',
+})
 SOURCE_URL = 'git@github.com:robinliang0829-lgtm/openastra-world-core.git'
 # Reviewed refs of the private source repository. The integration branch was removed
 # after PR #1 merged into `main`; only the mainline is trusted now.

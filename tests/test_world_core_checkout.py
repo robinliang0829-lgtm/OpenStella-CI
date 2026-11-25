@@ -48,7 +48,10 @@ class WorldCoreCheckoutTests(unittest.TestCase):
         self.helper = importlib.import_module('scripts.world_core_checkout')
 
     def test_trusted_refs_and_exact_snapshot_are_reviewed(self):
-        self.assertEqual(getattr(self.helper, 'APPROVED_FEATURE_SHAS', None), frozenset({'d6b47c6c557da3e57e5175ad2523bca698b61122'}))
+        self.assertEqual(getattr(self.helper, 'APPROVED_FEATURE_SHAS', None), frozenset({
+            'd6b47c6c557da3e57e5175ad2523bca698b61122',
+            '7b03cecd6d1702ec34d8ba328285ed2b1a21d5cc',
+        }))
         self.assertEqual(tuple(getattr(self.helper, 'TRUSTED_REFS', ())), ('refs/heads/main',))
         self.assertTrue(self.helper.SOURCE_URL.endswith('openastra-world-core.git'))
         self.assertNotIn('OpenStella.git', self.helper.SOURCE_URL)
