@@ -51,6 +51,7 @@ class WorldCoreCheckoutTests(unittest.TestCase):
         self.assertEqual(getattr(self.helper, 'APPROVED_FEATURE_SHAS', None), frozenset({
             'd6b47c6c557da3e57e5175ad2523bca698b61122',
             '7b03cecd6d1702ec34d8ba328285ed2b1a21d5cc',
+            '725c2887449d57b41674ec5d957f07a8c28842b8',
         }))
         self.assertEqual(tuple(getattr(self.helper, 'TRUSTED_REFS', ())), ('refs/heads/main',))
         self.assertTrue(self.helper.SOURCE_URL.endswith('openastra-world-core.git'))
